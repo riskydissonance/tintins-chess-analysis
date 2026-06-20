@@ -255,11 +255,8 @@ def analyze_game(
             after_board.push(move)
             followup_san = _pv_to_san(after_board, eval_next.best_pv_uci, max_plies=6)
             comment = _mistake_comment(
-                before.san(move),
-                classification,
                 round(win_before, 1),
                 round(win_after, 1),
-                round(win_before - win_after, 1),
                 best_move_san,
                 best_line_san,
                 followup_san,
@@ -367,26 +364,24 @@ def _build_timeline(
 
 
 def _mistake_comment(
-    move_san: str,
-    classification: str,
     win_before: float,
     win_after: float,
-    swing: float,
     best_move_san: str,
     best_line_san: list[str],
     followup_san: list[str],
 ) -> str:
-    """Concrete written explanation of a mistake, stitched from engine data we already have."""
-    article = "an" if classification == "inaccuracy" else "a"
-    parts = [
-        f"{move_san} is {article} {classification}: your win chance falls from "
-        f"{win_before}% to {win_after}% (−{swing})."
-    ]
+    """Concrete written explanation of a mistake, stitched from engine data we already have.
+
+    Kept terse and free of the verdict/swing (the header already states those) — this block is
+    just the engine substance: the win-chance swing, the better move + its line, and the
+    refutation the played move runs into.
+    """
+    parts = [f"Win chance {win_before}% → {win_after}%."]
     if best_move_san:
-        line = " ".join(best_line_san[:5])
-        parts.append(f"Stronger was {best_move_san}" + (f" — {line}." if line else "."))
+        cont = " ".join(best_line_san[1:5])  # best_move_san is best_line_san[0]; don't repeat it
+        parts.append(f"Better was {best_move_san}" + (f", then {cont}." if cont else "."))
     if followup_san:
-        parts.append(f"After {move_san}, the engine line runs {' '.join(followup_san)}.")
+        parts.append(f"Played line: {' '.join(followup_san)}.")
     return " ".join(parts)
 
 

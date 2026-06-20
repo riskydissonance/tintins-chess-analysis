@@ -26,6 +26,7 @@ KEYS = (
     "profile_recent",
     "profile_lifetime",
     "stockfish_path",
+    "coach_ai_auto",
 )
 
 
@@ -69,6 +70,8 @@ def apply(settings: dict) -> None:
         sp = (settings["stockfish_path"] or "").strip()
         if sp:
             config.STOCKFISH_PATH = shutil.which(sp) or sp
+    if "coach_ai_auto" in settings:
+        config.COACH_AI_AUTO = bool(settings["coach_ai_auto"])
 
 
 def apply_saved(data_dir: Optional[str] = None) -> dict:
@@ -91,6 +94,7 @@ def effective() -> dict:
         "profile_recent": str(config.PROFILE_RECENT_WINDOW),
         "profile_lifetime": "all" if config.PROFILE_LIFETIME is None else str(config.PROFILE_LIFETIME),
         "stockfish_path": config.STOCKFISH_PATH or "",
+        "coach_ai_auto": config.COACH_AI_AUTO,
     }
 
 

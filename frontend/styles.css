@@ -9,8 +9,11 @@
   --mistake: #e08000;
   --blunder: #d33;
   --best: #629924;
-  /* Board scales with viewport height but caps out; bigger than before. */
-  --board-size: min(74vh, 720px);
+  /* Board scales with viewport height but caps out. */
+  --board-size: min(68vh, 660px);
+  /* Full width of the board column = eval bar (20) + its gap (8) + the board. The win graph and
+     the other under-board panels span this so their right edge lines up with the board's. */
+  --col-width: calc(var(--board-size) + 28px);
 }
 
 * { box-sizing: border-box; }
@@ -125,7 +128,7 @@ main {
 /* --- win graph --- */
 #graph-wrap {
   position: relative;
-  width: var(--board-size);
+  width: var(--col-width);
   height: 90px;
   background: #14130f;
   border-radius: 5px;
@@ -182,7 +185,7 @@ main {
   gap: 14px;
   align-items: center;
   flex-wrap: wrap;
-  max-width: var(--board-size);
+  max-width: var(--col-width);
 }
 .ctrl-group { display: flex; gap: 6px; }
 .controls button {
@@ -202,7 +205,7 @@ main {
 .status {
   font-size: 14px;
   min-height: 18px;
-  max-width: var(--board-size);
+  max-width: var(--col-width);
   padding: 6px 0;
 }
 .status.away {
@@ -224,7 +227,7 @@ main {
 }
 
 .comment {
-  max-width: var(--board-size);
+  max-width: var(--col-width);
   font-size: 14px;
   line-height: 1.45;
   color: var(--text);
@@ -241,7 +244,7 @@ main {
   padding: 10px 12px;
   min-height: 20px;
   font-size: 14px;
-  max-width: var(--board-size);
+  max-width: var(--col-width);
 }
 .verdict .tag {
   display: inline-block;
@@ -258,8 +261,170 @@ main {
 .tag.blunder { background: var(--blunder); color: #fff; }
 .verdict .line { color: var(--muted); font-size: 13px; margin-top: 4px; }
 
+/* --- scoreboard (game report header) ------------------------------------ */
+.scoreboard {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 10px 14px;
+  max-width: var(--col-width);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.sb-opening {
+  font-size: 13.5px;
+  color: var(--muted);
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-acc { display: flex; align-items: baseline; gap: 10px; }
+.sb-acc-main { display: flex; align-items: baseline; gap: 6px; }
+.sb-acc-main b { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; }
+.sb-acc-lbl { font-size: 12px; color: var(--muted); }
+.sb-acc-opp { font-size: 12px; color: var(--muted); }
+.sb-counts { display: flex; gap: 6px; }
+.sb-counts .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  cursor: pointer;
+  border-radius: 12px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #161512;
+  background: var(--panel2);
+}
+.sb-counts .chip:hover { filter: brightness(1.12); }
+.sb-counts .chip .chip-n { font-size: 13px; font-weight: 700; }
+.sb-counts .chip.blunder { background: var(--blunder); color: #fff; }
+.sb-counts .chip.mistake { background: var(--mistake); }
+.sb-counts .chip.inaccuracy { background: var(--inaccuracy); }
+
+/* --- AI coach summary (board column, bottom) ---------------------------- */
+.coach-ai-wrap { max-width: var(--col-width); }
+.coach-ai-btn {
+  width: 100%;
+  background: #322f4a;
+  border: 1px solid #46426a;
+  color: #d9d6ef;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.coach-ai-btn:hover { background: #3b3858; border-color: #5b57c4; }
+.coach-ai {
+  background: linear-gradient(180deg, #2b2a3a 0%, var(--panel) 100%);
+  border: 1px solid #3a3850;
+  border-radius: 8px;
+  padding: 11px 13px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.coach-ai.pending { color: var(--muted); font-style: italic; }
+.coach-ai.err { border-color: var(--blunder); color: #f3c9c9; }
+/* rendered markdown inside the summary (bold / italics / lists / paragraphs) */
+.coach-ai p { margin: 0 0 8px; }
+.coach-ai p:last-child { margin-bottom: 0; }
+.coach-ai ul { margin: 6px 0 8px; padding-left: 20px; }
+.coach-ai li { margin: 2px 0; }
+.coach-ai strong { color: #fff; font-weight: 600; }
+.coach-ai em { font-style: italic; color: #d9c8a0; }
+.coach-ai code {
+  background: rgba(0, 0, 0, 0.3); padding: 0 4px; border-radius: 3px; font-size: 0.92em;
+}
+.coach-ai-tag {
+  float: left;                /* leading badge; the summary text wraps to its right */
+  margin: 1px 8px 0 0;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  background: #5b57c4;
+  color: #fff;
+}
+
 .side-col { width: 380px; }
 .side-col h2 { font-size: 15px; margin: 0 0 8px; }
+
+/* --- end-of-game coach blurb -------------------------------------------- */
+.coach {
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* --- move list (clickable notation) ------------------------------------- */
+.movelist-panel { margin-bottom: 18px; }
+.movelist-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.movelist-expand {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+.movelist-expand:hover { color: var(--text); }
+.movelist {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  background: var(--panel);
+  border-radius: 6px;
+  overflow-y: auto;
+  font-size: 13.5px;
+}
+.movelist.compact { max-height: 9.5rem; }
+.movelist.expanded { max-height: 44vh; }
+.move-row {
+  display: grid;
+  grid-template-columns: 2.2em 1fr 1fr;
+  align-items: center;
+  column-gap: 4px;
+  padding: 1px 2px;
+  border-radius: 4px;
+}
+.move-row:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
+.move-row .moveno { color: var(--muted); font-size: 12px; text-align: right; padding-right: 4px; }
+.movelist .ply {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.movelist .ply.empty { cursor: default; }
+.movelist .ply:not(.empty):hover { background: var(--panel2); }
+.movelist .ply.active { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* --- classification glyphs (?!, ?, ??, ✓) ------------------------------- */
+.glyph { font-weight: 700; font-size: 11px; line-height: 1; }
+.glyph.inaccuracy { color: var(--inaccuracy); }
+.glyph.mistake { color: var(--mistake); }
+.glyph.blunder { color: var(--blunder); }
+.glyph.best { color: var(--best); }
+.ply.active .glyph { color: #fff; }
 
 .mistakes { list-style: none; margin: 0 0 24px; padding: 0; }
 .mistakes li {
@@ -494,6 +659,12 @@ body.history-hidden .history-col { display: none; }
 }
 .set-field input:focus { outline: none; border-color: var(--accent); }
 .set-hint { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+/* checkbox field: lay the box + label on one row, and undo the full-width text-input styling. */
+.set-check { cursor: pointer; }
+.set-check-row { display: flex; align-items: center; gap: 8px; }
+.set-check input {
+  width: auto; padding: 0; margin: 0; flex: none; accent-color: var(--accent); cursor: pointer;
+}
 .set-adv { margin: 2px 0; border-top: 1px solid #3a372f; padding-top: 12px; }
 .set-adv summary { cursor: pointer; font-size: 13px; color: var(--muted); list-style: revert; }
 .set-adv[open] summary { color: var(--text); margin-bottom: 12px; }

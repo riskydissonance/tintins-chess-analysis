@@ -17,6 +17,7 @@ import threading
 import time
 
 from server import config
+from server.core import analysis_cache
 from server.core import history
 from server.core import session as session_mod
 from server.core.game_analysis import analyze_game as _analyze_game
@@ -75,6 +76,7 @@ def _run(pgn: str, player: str, token: int) -> None:
         if token != _state["token"]:
             return  # superseded; drop this result
         session_mod.set_session(sess)
+    analysis_cache.store(sess)  # so the next reopen is instant; best-effort, never raises
     # Persist for coaching — best-effort, exactly like the MCP path; never fail the job over it.
     if config.HISTORY_ENABLED:
         try:
@@ -87,7 +89,12 @@ def _run(pgn: str, player: str, token: int) -> None:
 
 
 def start(pgn: str, player: str = "auto") -> dict:
-    """Kick off a background analysis, superseding any in-flight one. Returns the new status."""
+    """Kick off a background analysis, superseding any in-flight one. Returns the new status.
+
+    If this exact game+side was analysed before (disk cache hit), the stored session is loaded
+    synchronously and the job lands on ``ready`` immediately — no engine sweep, no polling wait.
+    """
+    cached = analysis_cache.load(pgn, player)
     with _lock:
         _state["token"] += 1
         token = _state["token"]
@@ -95,6 +102,11 @@ def start(pgn: str, player: str = "auto") -> dict:
             status="pending", error=None, game_id=None, done=0, total=0, eta_seconds=None,
             total_games=1, done_games=0, current_game=1,
         )
+        if cached is not None:
+            # Already analysed (and so already in history) — show it right away.
+            session_mod.set_session(cached)
+            _state.update(status="ready", done_games=1)
+            return dict(_state)
     threading.Thread(
         target=_run, args=(pgn, player, token), name="chess-analyze", daemon=True
     ).start()
@@ -129,13 +141,16 @@ def _run_batch(
                 if token == _state["token"]:
                     _state.update(done=done, total=total, eta_seconds=eta)
 
-        try:
-            sess = _analyze_game(pgn, player=side, on_progress=_progress)
-        except Exception as exc:  # skip a bad game, keep going, remember the last error
-            with _lock:
-                if token == _state["token"]:
-                    _state.update(error=str(exc))
-            continue
+        sess = analysis_cache.load(pgn, side)  # re-uploaded games skip the sweep entirely
+        if sess is None:
+            try:
+                sess = _analyze_game(pgn, player=side, on_progress=_progress)
+            except Exception as exc:  # skip a bad game, keep going, remember the last error
+                with _lock:
+                    if token == _state["token"]:
+                        _state.update(error=str(exc))
+                continue
+            analysis_cache.store(sess)  # cache the fresh sweep for next time
         with _lock:
             if token != _state["token"]:
                 return

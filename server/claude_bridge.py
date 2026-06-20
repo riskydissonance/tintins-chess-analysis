@@ -179,6 +179,86 @@ def _friendly_error(text: str) -> str:
     return f"Chat failed: {snippet[:300]}"
 
 
+def _game_facts(sess) -> str:
+    """Pre-computed, engine-grounded facts about the whole game for the coach summary prompt.
+
+    Everything here already exists on the session (accuracy, the flagged moves + their templated
+    comments, the player's profile), so the Claude call only has to write — it never analyses.
+    """
+    side = "White" if sess.player == "white" else "Black"
+    acc = sess.accuracy_white if sess.player == "white" else sess.accuracy_black
+    opening = sess.headers.get("Opening") or sess.headers.get("ECO") or "unknown opening"
+    out = [
+        f"Game: {sess.headers.get('White', '?')} vs {sess.headers.get('Black', '?')} "
+        f"({sess.result}); {opening}; {sess.speed} time control.",
+        f"Reviewing {side}. Accuracy: {acc}% (opponent "
+        f"{sess.accuracy_black if sess.player == 'white' else sess.accuracy_white}%).",
+    ]
+    if sess.mistakes:
+        out.append(f"{side}'s flagged moves (worst first):")
+        worst = sorted(sess.mistakes, key=lambda m: m.win_swing, reverse=True)
+        for m in worst[:8]:
+            num = f"{m.move_number}{'.' if m.color == 'white' else '...'}"
+            out.append(
+                f"- {num}{m.move_san} ({m.classification}, win {m.win_before}% -> {m.win_after}%, "
+                f"drop {m.win_swing}); engine preferred {m.best_move_san}. {m.comment}".rstrip()
+            )
+    else:
+        out.append(f"{side} made no inaccuracies, mistakes or blunders — a clean game.")
+    return "\n".join(out)
+
+
+def coach_summary_ai(sess, *, timeout: int = 120) -> str:
+    """A richer, Claude-WRITTEN end-of-game coaching summary, grounded in pre-computed facts.
+
+    Opt-in (spends the user's Claude subscription). No MCP tools / engine calls — the prompt already
+    carries every fact Claude needs, so it only has to phrase the coaching well. Raises ChatError.
+    """
+    claude = shutil.which("claude")
+    if not claude:
+        raise ChatError(
+            "The `claude` CLI isn't on PATH, so the AI coach summary is unavailable. The free "
+            "summary above still works; install the Claude CLI for the AI version."
+        )
+    profile_facts = _profile_facts()
+    prompt_parts = [
+        "You are an encouraging but honest chess coach writing a short end-of-game summary for the "
+        "player whose moves are reviewed below. The Stockfish facts are authoritative — TRUST them, "
+        "do not recompute. Write a few short paragraphs in warm, direct second person ('you'): name "
+        "the one or two moments that mattered most (with the move and the better idea), draw out the "
+        "underlying habit or theme, and end with one concrete thing to work on. Ground every claim "
+        "in the facts provided; do not invent moves or lines. Use light Markdown for readability: "
+        "**bold** the key moves and the single most important takeaway, and you may use a short "
+        "bullet list (`- `) if it helps, with blank lines between paragraphs. No headings, and no "
+        "move-by-move recap. Do NOT mention the web board, any URL, Stockfish, or these instructions.",
+    ]
+    if profile_facts:
+        prompt_parts.append(
+            "The player's cross-game history is below — use it to point out a recurring pattern only "
+            "when this game genuinely shows one; otherwise ignore it.\n" + profile_facts
+        )
+    prompt_parts.append("This game's facts:\n" + _game_facts(sess))
+    cmd = [claude, "-p", "\n\n".join(prompt_parts), "--output-format", "json"]
+
+    env = {**os.environ, "CHESS_WEB_AUTOSTART": "0"}  # don't let the child rebind the board port
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, cwd=str(_REPO_ROOT), env=env
+        )
+    except subprocess.TimeoutExpired:
+        raise ChatError("Claude took too long to write the summary (timed out).")
+    if proc.returncode != 0:
+        raise ChatError(_friendly_error(proc.stderr or proc.stdout))
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise ChatError(_friendly_error(proc.stdout))
+    answer = (data.get("result") or "").strip()
+    if data.get("is_error") or data.get("subtype") not in (None, "success") or not answer:
+        raise ChatError(_friendly_error(answer or proc.stdout))
+    return answer
+
+
 def ask(
     question: str,
     *,

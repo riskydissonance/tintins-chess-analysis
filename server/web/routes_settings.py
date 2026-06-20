@@ -26,6 +26,7 @@ class SettingsPatch(BaseModel):
     profile_recent: str | None = None
     profile_lifetime: str | None = None
     stockfish_path: str | None = None
+    coach_ai_auto: bool | None = None
 
 
 def _stockfish_ok(path: str) -> bool:

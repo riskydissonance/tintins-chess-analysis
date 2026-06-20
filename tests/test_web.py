@@ -155,8 +155,56 @@ def test_app_config_reports_app_mode(monkeypatch):
 
     monkeypatch.setattr(config, "APP_MODE", True)
     monkeypatch.setattr(config, "USERNAME", "thedarktintin")
+    monkeypatch.setattr(config, "COACH_AI_AUTO", False)
     body = client.get("/api/app-config").json()
-    assert body == {"app_mode": True, "default_username": "thedarktintin"}
+    assert body == {
+        "app_mode": True,
+        "default_username": "thedarktintin",
+        "coach_ai_auto": False,
+    }
+
+
+def test_coach_game_facts_are_grounded():
+    """The prompt facts come straight from the session — no engine/Claude call needed."""
+    sess = analyze_game(SAMPLE_PGN, player="white")
+    facts = claude_bridge._game_facts(sess)
+    assert "thedarktintin" in facts and "Reviewing White" in facts
+    assert "Accuracy:" in facts
+
+
+def test_coach_route_no_session():
+    session_mod.clear_session()
+    r = client.post("/api/coach")
+    assert r.status_code == 400
+
+
+def test_coach_route_generates_and_caches(monkeypatch):
+    """/api/coach wires through claude_bridge.coach_summary_ai (mocked) and caches per game."""
+    session_mod.set_session(analyze_game(SAMPLE_PGN, player="white"))
+
+    calls = {"n": 0}
+
+    def fake_ai(sess, **kwargs):
+        calls["n"] += 1
+        return "You went hunting on h5 too early — develop first."
+
+    monkeypatch.setattr(claude_bridge, "coach_summary_ai", fake_ai)
+    first = client.post("/api/coach").json()
+    assert first["summary"].startswith("You went hunting")
+    second = client.post("/api/coach").json()  # cached -> no second claude call
+    assert second["cached"] is True
+    assert calls["n"] == 1
+
+
+def test_coach_route_error_is_friendly(monkeypatch):
+    session_mod.set_session(analyze_game(SAMPLE_PGN, player="white"))
+
+    def boom(sess, **kwargs):
+        raise claude_bridge.ChatError("Claude usage limit reached.")
+
+    monkeypatch.setattr(claude_bridge, "coach_summary_ai", boom)
+    r = client.post("/api/coach")
+    assert r.status_code == 503 and "limit" in r.json()["error"]
 
 
 # --- history / lichess / progressive-analyze routes (engine kept out via monkeypatch) ---

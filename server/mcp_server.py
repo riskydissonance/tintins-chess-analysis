@@ -16,6 +16,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from server import config
+from server.core import analysis_cache
 from server.core import engine
 from server.core import history
 from server.core import lichess
@@ -57,6 +58,7 @@ def analyze_game(
     lifecycle.touch()
     sess = _analyze_game(pgn, player=player, elo=elo, sensitivity=sensitivity)
     session_mod.set_session(sess)
+    analysis_cache.store(sess)  # so reopening this game on the board is instant
 
     summary = session_mod.summarize_session(sess)
     board_url = f"http://{config.WEB_HOST}:{config.WEB_PORT}"

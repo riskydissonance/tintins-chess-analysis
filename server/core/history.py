@@ -488,6 +488,92 @@ def format_profile_for_prompt(profile: dict) -> Optional[str]:
     return "\n".join(out)
 
 
+# --------------------------------------------------------------------------------------
+# End-of-game coaching blurb
+# --------------------------------------------------------------------------------------
+def _grade_phrase(acc: float) -> str:
+    if acc >= 90:
+        return "Excellent game"
+    if acc >= 80:
+        return "Solid game"
+    if acc >= 70:
+        return "A mixed game"
+    return "A rough game"
+
+
+def _tally_phrase(blunders: int, mistakes: int, inaccuracies: int) -> str:
+    """e.g. '1 blunder, 3 mistakes and 2 inaccuracies' — zeros dropped, plurals handled."""
+    parts = []
+    for n, noun in ((blunders, "blunder"), (mistakes, "mistake"), (inaccuracies, "inaccuracy")):
+        if n:
+            word = noun if n == 1 else (noun[:-1] + "ies" if noun.endswith("y") else noun + "s")
+            parts.append(f"{n} {word}")
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _dominant_motif(mistakes: list) -> Optional[str]:
+    """The most common motif across this game's flagged moves (engine-free; reuses tag_motifs)."""
+    counts: Counter = Counter()
+    for m in mistakes:
+        best_uci = m.best_line_uci[0] if m.best_line_uci else None
+        for motif in tag_motifs(m.fen_before, m.move_uci, best_uci, m.win_swing, m.eval_before):
+            counts[motif] += 1
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _is_recurring(motif: str, data_dir: Optional[str]) -> bool:
+    """True if `motif` is a repeated theme in the player's recent profile (best-effort)."""
+    try:
+        profile = get_profile(my_player_id(data_dir), data_dir)
+        for entry in (profile.get("recent") or {}).get("top_motifs", []):
+            if entry.get("motif") == motif and entry.get("count", 0) >= 2:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def coach_summary(sess: ReviewSession, data_dir: Optional[str] = None) -> Optional[str]:
+    """A short, engine-free end-of-game coaching blurb grounded in this game's flagged moves.
+
+    Same philosophy as MoveReview.comment: templated + deterministic, no engine and no Claude
+    call, so it's free and always available. Three beats — overall accuracy/tally, the single
+    costliest moment (with the better move), and the recurring thread to watch (tied to the
+    player's profile when the same theme shows up across games). Returns None for a clean game.
+    """
+    side = "White" if sess.player == "white" else "Black"
+    acc = sess.accuracy_white if sess.player == "white" else sess.accuracy_black
+    mistakes = sess.mistakes
+    if not mistakes:
+        return f"Clean game — {acc}% accuracy as {side}, no inaccuracies, mistakes or blunders flagged."
+
+    counts = Counter(m.classification for m in mistakes)
+    tally = _tally_phrase(
+        counts.get("blunder", 0), counts.get("mistake", 0), counts.get("inaccuracy", 0)
+    )
+    parts = [f"{_grade_phrase(acc)} — {acc}% accuracy as {side}, with {tally}."]
+
+    worst = max(mistakes, key=lambda m: m.win_swing)
+    num = f"{worst.move_number}{'.' if worst.color == 'white' else '...'}"
+    better = f" {worst.best_move_san} was stronger." if worst.best_move_san else ""
+    parts.append(
+        f"Your costliest moment was {num}{worst.move_san} "
+        f"({worst.classification}, −{round(worst.win_swing)}%).{better}"
+    )
+
+    motif = _dominant_motif(mistakes)
+    if motif:
+        label = _MOTIF_LABELS.get(motif, motif)
+        tie = " — also a recurring theme across your recent games" if _is_recurring(motif, data_dir) else ""
+        parts.append(f"The thread to watch: {label}{tie}.")
+
+    return " ".join(parts)
+
+
 def _phase(fen: str, move_number: int) -> str:
     """opening / middlegame / endgame from material + move number (heuristic)."""
     try:

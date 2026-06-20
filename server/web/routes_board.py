@@ -54,7 +54,11 @@ class BestMovesBody(BaseModel):
 def get_app_config() -> dict:
     """Frontend bootstrap: whether this is the standalone "app mode" launch (auto-load the user's
     most recent Lichess game on open) and the default username to use for that (CHESS_USERNAME)."""
-    return {"app_mode": config.APP_MODE, "default_username": config.USERNAME or ""}
+    return {
+        "app_mode": config.APP_MODE,
+        "default_username": config.USERNAME or "",
+        "coach_ai_auto": config.COACH_AI_AUTO,  # auto-press the AI-summary button on each game?
+    }
 
 
 @router.get("/session")

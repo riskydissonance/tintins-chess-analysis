@@ -42,12 +42,22 @@ let batchInfo = null; // {total, self_handle, lastDone} while a multi-game uploa
 let lichessCount = 5; // how many recent lichess games to show ("Load more" grows it)
 let lichessUser = ""; // the handle currently shown in lichess mode (for "Load more")
 const LICHESS_PAGE = 5; // initial count + how many more each "Load more"
+// "My games": /api/history returns every analysed game; we render them in pages (inside the
+// fixed-height scroll box) so the list starts short and grows on "Show more", not the page.
+let historyGames = []; // all rows from the last /api/history fetch
+let historyCount = 10; // how many to show now ("Show more" grows it)
+const HISTORY_PAGE = 10; // initial count + how many more each "Show more"
 
 // App mode (double-click launcher): on open, auto-load the user's most recent game.
 // `appUsername` is the single, server-side identity (config.USERNAME, editable in Settings) — used
 // for autoload, "My games", and the coaching profile, so there's one source of truth.
 let appMode = false;
 let appUsername = "";
+// On-demand Claude-written end-of-game summary: generated when the user presses the button, or
+// automatically per game when `coachAiAuto` is on (a Settings option). `coachAiToken` invalidates
+// an in-flight request when a new game is opened so a stale summary never lands on the wrong game.
+let coachAiAuto = false;
+let coachAiToken = 0;
 
 const $ = (id) => document.getElementById(id);
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
@@ -222,7 +232,8 @@ function updateStatus() {
     $("ret").onclick = returnToReview;
   } else {
     el.className = "status";
-    el.textContent = currentPrompt || nodeLabel(cur);
+    const g = timeline[cur] ? classGlyph(timeline[cur].classification) : "";
+    el.innerHTML = g + escapeHtml(currentPrompt || nodeLabel(cur));
   }
 }
 
@@ -241,6 +252,7 @@ function gotoNode(n) {
   updateStatus();
   updateNav();
   renderGraph();
+  highlightCurrentMove();
   refreshBestMoves();
 }
 
@@ -427,6 +439,14 @@ function classColor(cls) {
   );
 }
 
+// A small graded badge for a move's classification (only the reviewed player's moves carry one).
+// `good` and opponent moves (null) get no glyph so the notation stays readable.
+const GLYPHS = { blunder: "??", mistake: "?", inaccuracy: "?!", best: "✓" };
+function classGlyph(cls) {
+  const g = GLYPHS[cls];
+  return g ? `<span class="glyph ${cls}">${g}</span>` : "";
+}
+
 function onGraphClick(ev) {
   const n = timeline.length;
   if (n < 2) return;
@@ -469,6 +489,113 @@ async function selectMistake(i) {
   );
   gotoNode(anchorNode);
   $("comment").textContent = mistakes[i].comment || "";
+}
+
+// --- scoreboard (game report header) -------------------------------------
+// Headline stats for the reviewed side, derived entirely from the /session payload: opening,
+// per-side accuracy, and counts of blunders / mistakes / inaccuracies (the `mistakes` array is
+// exactly the reviewed player's flagged moves). Clicking a count chip jumps to the first of that
+// class. Rendered from applySession (phase-2), so it only ever shows real numbers.
+function renderScoreboard(session) {
+  const board = $("scoreboard");
+  if (!board) return;
+  const reviewed = session.player === "black" ? "black" : "white";
+  const sideLabel = reviewed === "white" ? "White" : "Black";
+  const myAcc = reviewed === "white" ? session.accuracy_white : session.accuracy_black;
+  const oppAcc = reviewed === "white" ? session.accuracy_black : session.accuracy_white;
+  const counts = { blunder: 0, mistake: 0, inaccuracy: 0 };
+  (session.mistakes || []).forEach((m) => {
+    if (counts[m.classification] != null) counts[m.classification] += 1;
+  });
+  board.innerHTML =
+    `<div class="sb-opening" title="Opening">${escapeHtml(session.opening || "—")}</div>` +
+    `<div class="sb-acc">` +
+    `<span class="sb-acc-main"><b>${myAcc}</b><span class="sb-acc-lbl">accuracy (${sideLabel})</span></span>` +
+    `<span class="sb-acc-opp">opponent ${oppAcc}</span>` +
+    `</div>` +
+    `<div class="sb-counts">` +
+    scoreboardChip("blunder", counts.blunder, "Blunders") +
+    scoreboardChip("mistake", counts.mistake, "Mistakes") +
+    scoreboardChip("inaccuracy", counts.inaccuracy, "Inaccuracies") +
+    `</div>`;
+  board.hidden = false;
+  board.querySelectorAll(".chip[data-cls]").forEach((el) =>
+    el.addEventListener("click", () => jumpToClass(el.dataset.cls))
+  );
+}
+
+function scoreboardChip(cls, n, label) {
+  return (
+    `<button type="button" class="chip ${cls}" data-cls="${cls}" title="${label}">` +
+    `<span class="chip-n">${n}</span> <span class="chip-lbl">${label}</span></button>`
+  );
+}
+
+function jumpToClass(cls) {
+  const i = mistakes.findIndex((m) => m.classification === cls);
+  if (i >= 0) selectMistake(i);
+}
+
+// --- move list (clickable notation) --------------------------------------
+// The full game as a compact, scrollable two-column notation panel. Built from the same `timeline`
+// the graph/arrows use, so it works on the provisional (phase-1) timeline too — glyphs just fill in
+// when engine analysis lands. Clicking a flagged move routes through selectMistake (surfacing its
+// comment + anchor); any other move is a plain gotoNode jump.
+function renderMoveList() {
+  const ol = $("movelist");
+  if (!ol) return;
+  ol.innerHTML = "";
+  const plies = timeline.filter((nd) => nd.move_san); // skip the final (terminal) node
+  if (!plies.length) return;
+  const rows = new Map(); // move_number -> {w, b}
+  for (const nd of plies) {
+    if (!rows.has(nd.move_number)) rows.set(nd.move_number, { w: null, b: null });
+    rows.get(nd.move_number)[nd.color === "white" ? "w" : "b"] = nd;
+  }
+  for (const [num, pair] of rows) {
+    const li = document.createElement("li");
+    li.className = "move-row";
+    li.innerHTML = `<span class="moveno">${num}.</span>${plyCell(pair.w)}${plyCell(pair.b)}`;
+    ol.appendChild(li);
+  }
+  ol.querySelectorAll(".ply[data-node]").forEach((el) =>
+    el.addEventListener("click", () => onMoveClick(Number(el.dataset.node)))
+  );
+  highlightCurrentMove();
+}
+
+function plyCell(nd) {
+  if (!nd) return `<span class="ply empty"></span>`;
+  return `<span class="ply" data-node="${nd.node}">${classGlyph(nd.classification)}${nd.move_san}</span>`;
+}
+
+function onMoveClick(i) {
+  const nd = timeline[i];
+  if (nd && nd.mistake_index != null) selectMistake(nd.mistake_index);
+  else gotoNode(i);
+}
+
+// Highlight the move at the current node and keep it scrolled into view (works in compact mode).
+function highlightCurrentMove() {
+  const ol = $("movelist");
+  if (!ol) return;
+  let active = null;
+  ol.querySelectorAll(".ply[data-node]").forEach((el) => {
+    const on = Number(el.dataset.node) === cur;
+    el.classList.toggle("active", on);
+    if (on) active = el;
+  });
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+// Compact (a few rows, scrollable) <-> expanded (whole game). Default is compact.
+function toggleMoveList() {
+  const ol = $("movelist");
+  if (!ol) return;
+  const expanded = ol.classList.toggle("expanded");
+  ol.classList.toggle("compact", !expanded);
+  $("movelist-expand").textContent = expanded ? "Collapse ▴" : "Show all ▾";
+  highlightCurrentMove();
 }
 
 function updateNav() {
@@ -577,6 +704,80 @@ function applySession(session) {
     `(acc W ${session.accuracy_white} / B ${session.accuracy_black}) · ${session.num_mistakes} mistakes${sens}`;
   mistakes = session.mistakes;
   renderMistakeList();
+  renderScoreboard(session);
+  renderCoach(session);
+  // NB: prepareCoachAI() is intentionally NOT called here — it's run by the caller AFTER
+  // applyTimeline(), so it sees the new game's timeline (applySession runs before applyTimeline).
+}
+
+// Free, engine-grounded templated blurb (rides on /api/session) — always shown when present.
+function renderCoach(session) {
+  const el = $("coach");
+  if (!el) return;
+  const text = session && session.coach_summary;
+  el.textContent = text || "";
+  el.hidden = !text;
+}
+
+// Claude-written summary (board column, bottom). The card shows its state; the button offers
+// on-demand generation. Server caches per game, so re-requests don't spend Claude again.
+function showCoachButton(show) {
+  const btn = $("coach-ai-btn");
+  if (btn) btn.hidden = !show;
+}
+
+function setCoachAI(state, text) {
+  const el = $("coach-ai");
+  if (!el) return;
+  if (state === "hidden") {
+    el.hidden = true;
+    el.className = "coach-ai";
+    el.textContent = "";
+  } else if (state === "pending") {
+    el.hidden = false;
+    el.className = "coach-ai pending";
+    el.textContent = "Writing a fuller summary with Claude…";
+  } else if (state === "error") {
+    el.hidden = false;
+    el.className = "coach-ai err";
+    el.textContent = text || "Couldn't generate the summary.";
+  } else {
+    el.hidden = false;
+    el.className = "coach-ai";
+    // Render bold / italics / lists / paragraphs (same safe markdown as the chat answers).
+    el.innerHTML = `<span class="coach-ai-tag">AI coach</span>${renderMarkdown(text)}`;
+  }
+}
+
+// Set up the AI-summary UI for the freshly-loaded game: auto-generate, or just offer the button.
+function prepareCoachAI() {
+  coachAiToken++; // any earlier in-flight request is now stale
+  setCoachAI("hidden");
+  if (!timeline.length) { showCoachButton(false); return; }
+  if (coachAiAuto) fetchCoachAI();
+  else showCoachButton(true);
+}
+
+// Actually request the summary (button press, or the auto path). Always allowed — it only ever
+// runs from an explicit user choice, so it spends Claude only when asked.
+async function fetchCoachAI() {
+  const tok = ++coachAiToken;
+  showCoachButton(false);
+  setCoachAI("pending");
+  let res;
+  try {
+    res = await fetch("/api/coach", { method: "POST" }).then((r) => r.json());
+  } catch (_) {
+    if (tok === coachAiToken) { setCoachAI("error", "Couldn't reach the summary service."); showCoachButton(true); }
+    return;
+  }
+  if (tok !== coachAiToken) return; // a newer game superseded this request
+  if (res && res.summary) {
+    setCoachAI("ready", res.summary);
+  } else {
+    setCoachAI(res && res.error ? "error" : "hidden", res && res.error);
+    showCoachButton(true); // let the user retry
+  }
 }
 
 function applyTimeline(tl) {
@@ -584,6 +785,7 @@ function applyTimeline(tl) {
   player = tl.player || "white";
   orient = player; // orientation follows the reviewed side until the user flips (f)
   applyEvalBarTheme();
+  renderMoveList();
 }
 
 async function loadAll() {
@@ -592,6 +794,7 @@ async function loadAll() {
     const cfg = await fetch("/api/app-config").then((r) => r.json());
     appMode = !!cfg.app_mode;
     appUsername = (cfg.default_username || "").trim();
+    coachAiAuto = !!cfg.coach_ai_auto;
   } catch (_) {}
   if (appUsername) $("lichess-user").placeholder = appUsername;
   if (appMode) startHeartbeat(); // so closing this tab quits the standalone app
@@ -609,6 +812,7 @@ async function loadAll() {
   applyTimeline(tl);
   if (mistakes.length) selectMistake(session.current_index ?? 0);
   else gotoNode(0);
+  prepareCoachAI(); // timeline is set now → offer the button (or auto-generate)
 }
 
 // --- app mode: auto-open the latest Lichess game -------------------------
@@ -768,6 +972,11 @@ function beginProvisional(pgn, side, metaText) {
   $("verdict").innerHTML = "";
   setAnalyzingUI(true);
   renderMistakeList();
+  $("scoreboard").hidden = true; // stale until the new game's stats land in phase-2
+  $("coach").hidden = true;
+  coachAiToken++; // invalidate any in-flight AI summary from the previous game
+  setCoachAI("hidden");
+  showCoachButton(false);
 
   let prov = null;
   try {
@@ -780,10 +989,12 @@ function beginProvisional(pgn, side, metaText) {
     player = side === "white" || side === "black" ? side : "white";
     orient = player;
     applyEvalBarTheme();
+    renderMoveList(); // provisional notation: navigable immediately, glyphs fill in later
     gotoNode(0);
     $("game-meta").textContent = metaText || "Analyzing… you can step through the moves now (← / →).";
   } else {
     timeline = [];
+    renderMoveList();
     $("game-meta").textContent = "Analyzing…";
   }
 }
@@ -867,6 +1078,7 @@ async function onAnalysisReady() {
   // Keep the user where they were navigating; if they hadn't moved, jump to the first mistake.
   if (prevCur === 0 && mistakes.length) selectMistake(session.current_index ?? 0);
   else gotoNode(clamp(prevCur, 0, timeline.length - 1));
+  prepareCoachAI(); // timeline is set now → offer the button (or auto-generate)
   if (batchInfo) {
     // Whole upload done: surface every game in "My games".
     const n = batchInfo.total;
@@ -899,8 +1111,27 @@ async function loadHistory(doneMsg) {
   }
   myPlayerId = data.player_id || myPlayerId;
   if (myPlayerId) $("lichess-user").placeholder = myPlayerId;
-  renderHistory(data.games || [], "normal");
-  $("history-status").textContent = (data.games || []).length ? doneMsg || "" : "No analyzed games yet.";
+  historyGames = data.games || [];
+  historyCount = HISTORY_PAGE; // a fresh fetch resets paging back to the first page
+  renderMyGames();
+  $("history-status").textContent = historyGames.length ? doneMsg || "" : "No analyzed games yet.";
+}
+
+// Render the current page of "My games" into the (fixed-height, scrollable) list, with a
+// "Show more" row when there are extra games beyond what's shown. No refetch — pages a cached list.
+function renderMyGames() {
+  renderHistory(historyGames.slice(0, historyCount), "normal");
+  const remaining = historyGames.length - historyCount;
+  if (remaining > 0) {
+    const li = document.createElement("li");
+    li.className = "load-more";
+    li.textContent = `Show more (${remaining})`;
+    li.addEventListener("click", () => {
+      historyCount += HISTORY_PAGE;
+      renderMyGames();
+    });
+    $("history-list").appendChild(li);
+  }
 }
 
 async function loadLichess(username) {
@@ -1022,6 +1253,7 @@ async function openSettings() {
   $("set-recent").value = s.profile_recent || "";
   $("set-lifetime").value = s.profile_lifetime || "";
   $("set-stockfish").value = s.stockfish_path || "";
+  $("set-coach-ai-auto").checked = !!s.coach_ai_auto; // auto-generate per game (default off)
   $("set-sf-status").textContent = data.stockfish_ok
     ? "Stockfish engine found ✓"
     : "Stockfish not found — analysis won't run until this points at the engine.";
@@ -1039,6 +1271,7 @@ async function saveSettings(e) {
     profile_recent: $("set-recent").value.trim(),
     profile_lifetime: $("set-lifetime").value.trim(),
     stockfish_path: $("set-stockfish").value.trim(),
+    coach_ai_auto: $("set-coach-ai-auto").checked,
   };
   let res;
   try {
@@ -1058,6 +1291,18 @@ async function saveSettings(e) {
   appUsername = (res.settings && res.settings.username) || "";
   if (appUsername) $("lichess-user").placeholder = appUsername;
   $("settings").hidden = true;
+  // Apply the auto-summary preference without clobbering a summary that's already shown/pending:
+  // only act when nothing's there yet (turn-on -> generate now; turn-off -> offer the button).
+  coachAiAuto = !!(res.settings && res.settings.coach_ai_auto);
+  const card = $("coach-ai");
+  const busy = card && !card.hidden && !card.classList.contains("err");
+  if (timeline.length && !busy) {
+    if (coachAiAuto) fetchCoachAI();
+    else { setCoachAI("hidden"); showCoachButton(true); }
+  } else if (!timeline.length) {
+    setCoachAI("hidden");
+    showCoachButton(false);
+  }
   if (historyMode === "normal") loadHistory(); // identity may have changed -> refresh My games
 }
 
@@ -1123,6 +1368,8 @@ function init() {
     refreshBestMoves(); // starts the live search when on, clears arrows when off
   });
   $("graph").addEventListener("click", onGraphClick);
+  $("movelist-expand").addEventListener("click", toggleMoveList);
+  $("coach-ai-btn").addEventListener("click", fetchCoachAI);
   $("chat-form").addEventListener("submit", sendChat);
 
   // Games panel: collapse toggle, mode slider, lichess lookup.

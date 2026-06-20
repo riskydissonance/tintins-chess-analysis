@@ -478,3 +478,34 @@ def test_get_profile_no_history(tmp_path):
     session_mod.clear_session()
     out = history.get_profile(data_dir=str(tmp_path))
     assert "error" in out and out["known_players"] == []
+
+
+# --- end-of-game coach blurb -----------------------------------------------------------
+def test_coach_summary_grounded(tmp_path):
+    """The blurb names accuracy, the costliest move + its refutation, and a motif — engine-free."""
+    text = history.coach_summary(_session(), data_dir=str(tmp_path))
+    assert text
+    assert "70.0% accuracy as White" in text
+    assert "1 blunder" in text and "blunders" not in text  # singular, no zero categories
+    assert "Qd5" in text and "35%" in text  # costliest move + its win-swing
+    assert "Kf2" in text  # the better move
+    assert "hanging" in text  # the dominant motif (Qd5 hangs the queen) -> _MOTIF_LABELS
+
+
+def test_coach_summary_clean_game(tmp_path):
+    text = history.coach_summary(_session(mistakes=[], accuracy_white=96.0), data_dir=str(tmp_path))
+    assert text.startswith("Clean game") and "96.0% accuracy as White" in text
+
+
+def test_coach_summary_recurring_tie_in(tmp_path, monkeypatch):
+    """When the same motif is a repeated profile theme, the blurb flags it as recurring."""
+    d = str(tmp_path)
+    # Two prior games already tagged with the same motif -> it's "recurring" in the profile.
+    for i in range(2):
+        rec = _profile_rec(f"g{i}", 70.0, "0-1", ["hung_piece"], f"2026-06-0{i + 1}T00:00:00Z")
+        history.append_record(rec, data_dir=d)
+    history.write_profile("p", data_dir=d)
+    # Point identity resolution at this player so get_profile finds those records (restored after).
+    monkeypatch.setattr(history.config, "USERNAME", "p")
+    text = history.coach_summary(_session(), data_dir=d)
+    assert "recurring theme" in text

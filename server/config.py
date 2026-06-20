@@ -117,6 +117,21 @@ USERNAME_ALIASES: list[tuple[str | None, str]] = _parse_aliases(os.environ.get("
 DATA_DIR: str = os.environ.get("CHESS_DATA_DIR", os.path.join(_REPO_ROOT, ".chess-review"))
 HISTORY_ENABLED: bool = os.environ.get("CHESS_HISTORY", "1") != "0"
 
+# Disk cache of fully-analysed games (<DATA_DIR>/analysis-cache/<game_id>_<side>.json), keyed by
+# the same (game_id, reviewed_side) history dedupes on. Reopening a game already analysed on this
+# machine — even in a previous app session — then loads from disk instead of re-running the
+# ~20-45s Stockfish sweep. Best-effort; CHESS_ANALYSIS_CACHE=0 disables it. The entry cap bounds
+# disk growth (least-recently-used pruned); CHESS_ANALYSIS_CACHE_MAX=0 means unbounded.
+ANALYSIS_CACHE_ENABLED: bool = os.environ.get("CHESS_ANALYSIS_CACHE", "1") != "0"
+ANALYSIS_CACHE_MAX: int = int(os.environ.get("CHESS_ANALYSIS_CACHE_MAX", "1000"))
+
+# The engine-grounded templated coaching blurb (history.coach_summary) is always attached to a
+# session summary — it's free (no engine/Claude work). The richer, Claude-WRITTEN summary is
+# generated on demand via /api/coach (a button in the UI), so it only spends the user's Claude
+# subscription when asked. This flag controls whether the UI presses that button AUTOMATICALLY for
+# each game opened; off by default (CHESS_COACH_AI_AUTO=1 to default it on).
+COACH_AI_AUTO: bool = os.environ.get("CHESS_COACH_AI_AUTO", "0") == "1"
+
 # Self-terminate the server process after this many seconds of inactivity (no MCP tool call
 # and no board request), so an abandoned session doesn't linger as a process forever. Activity
 # resets the timer. Default 24h; CHESS_SESSION_TTL=0 disables the watchdog.

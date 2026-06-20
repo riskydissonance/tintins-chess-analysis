@@ -14,7 +14,8 @@ def restore_config():
     """Snapshot + restore the config attributes settings mutates (so tests don't leak)."""
     saved = {
         k: getattr(config, k)
-        for k in ("USERNAME", "USERNAME_ALIASES", "LICHESS_TOKEN", "PROFILE_RECENT_WINDOW", "PROFILE_LIFETIME")
+        for k in ("USERNAME", "USERNAME_ALIASES", "LICHESS_TOKEN", "PROFILE_RECENT_WINDOW",
+                  "PROFILE_LIFETIME", "COACH_AI_AUTO")
     }
     yield
     for k, v in saved.items():
@@ -49,3 +50,15 @@ def test_effective_round_trips_lifetime(restore_config):
     assert settings.effective()["profile_lifetime"] == "all"
     settings.apply({"profile_lifetime": "50"})
     assert settings.effective()["profile_lifetime"] == "50"
+
+
+def test_coach_ai_auto_toggle_persists(tmp_path, restore_config):
+    d = str(tmp_path)
+    settings.update({"coach_ai_auto": True}, data_dir=d)  # opt-in (default is off)
+    assert config.COACH_AI_AUTO is True
+    assert json.loads((tmp_path / "settings.json").read_text())["coach_ai_auto"] is True
+    # A fresh process picks the saved value back up over the env/default.
+    config.COACH_AI_AUTO = False
+    settings.apply_saved(data_dir=d)
+    assert config.COACH_AI_AUTO is True
+    assert settings.effective()["coach_ai_auto"] is True

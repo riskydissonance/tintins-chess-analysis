@@ -41,6 +41,7 @@
 
     <main>
       <section class="board-col">
+        <div id="scoreboard" class="scoreboard" hidden></div>
         <div class="board-wrap">
           <div id="evalbar"><div id="evalbar-fill"></div></div>
           <div id="board" class="cg-wrap"></div>
@@ -72,9 +73,24 @@
         <div id="status" class="status"></div>
         <div id="comment" class="comment"></div>
         <div id="verdict" class="verdict"></div>
+        <div class="coach-ai-wrap">
+          <button id="coach-ai-btn" class="coach-ai-btn" hidden
+            title="Have Claude write a fuller coaching summary of this game (uses your Claude subscription)">
+            ✨ Generate AI coach summary
+          </button>
+          <div id="coach-ai" class="coach-ai" hidden></div>
+        </div>
       </section>
 
       <aside class="side-col">
+        <div id="coach" class="coach" hidden></div>
+        <section id="movelist-panel" class="movelist-panel">
+          <div class="movelist-head">
+            <h2>Moves</h2>
+            <button id="movelist-expand" type="button" class="movelist-expand">Show all ▾</button>
+          </div>
+          <ol id="movelist" class="movelist compact"></ol>
+        </section>
         <h2>Mistakes</h2>
         <ol id="mistakes" class="mistakes"></ol>
         <div class="chat-panel">
@@ -173,6 +189,16 @@
         <label class="set-field">
           <span class="set-label">Lichess token <span class="set-opt">(optional)</span></span>
           <input id="set-token" type="password" autocomplete="off" placeholder="for higher rate limits" />
+        </label>
+
+        <label class="set-field set-check">
+          <span class="set-check-row">
+            <input id="set-coach-ai-auto" type="checkbox" />
+            <span class="set-label">Auto-generate AI coach summary <span class="set-opt">(uses your Claude subscription)</span></span>
+          </span>
+          <span class="set-hint">A button under the board lets you have Claude write a fuller coaching
+            summary for any game. Turn this on to generate it automatically for every game you open
+            instead of pressing the button. The quick free summary in the side panel always shows.</span>
         </label>
 
         <details class="set-adv">
