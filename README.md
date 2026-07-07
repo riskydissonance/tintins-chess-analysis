@@ -1,5 +1,7 @@
 # Kibitz — your AI chess tutor
 
+**In case it's not obvious from the 'forked from' at the top, this is forked from Chess-analysis-mcp/tintins-chess-analysis and the vast majority of the credit goes to the author!**
+
 [![CI](https://github.com/Chess-analysis-mcp/tintins-chess-analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/Chess-analysis-mcp/tintins-chess-analysis/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
