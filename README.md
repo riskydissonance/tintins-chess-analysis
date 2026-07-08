@@ -11,9 +11,10 @@ real **Stockfish** lines instead of guessed. Under the hood it reviews your game
 finds exactly where you went wrong; the difference is it then explains it. Works with games from
 **anywhere** (Lichess, Chess.com, or any PGN you can paste): both Lichess and Chess.com games can
 be fetched by username, your latest game auto-loads on launch, and new **Chess.com games sync
-automatically** into your history. It runs two ways: from the **Claude Code
-terminal** (as an MCP server) and as an **interactive web board** that share one engine and one
-analysis, so they never disagree.
+automatically** into your history — which then feeds cross-game **Insights** and a **puzzle
+trainer built from your own mistakes** (exportable to a Lichess study). It runs two ways: from the
+**Claude Code terminal** (as an MCP server) and as an **interactive web board** that share one
+engine and one analysis, so they never disagree.
 
 ![Chess Review board: the board with played, best, and refutation arrows, an eval bar, a win graph, the mistake list, the Kibitz AI coach, and the Games panel](docs/screenshots/chess_new_pipeline.png)
 
@@ -49,10 +50,24 @@ analysis, so they never disagree.
   is threatening to play next.
 - **Chess.com auto-sync.** Set your Chess.com username once and every launch fetches your newest
   games and analyzes the ones it hasn't seen, straight into **My games** (there's also a manual
-  ⟳ Sync button on the Chess.com tab).
-- **Insights panel.** Recurring themes and stats aggregated across every analyzed game in a chosen
-  period (today / last 7 days / last 30 days / all time): record, average accuracy, your most
-  common mistake motifs, weakest phase, and most-played openings.
+  ⟳ Sync button on the Chess.com tab). On by default and configurable in **⚙ Settings** — toggle
+  it off, or choose how many recent games each launch checks.
+- **Puzzle trainer — drill your own mistakes.** The **Puzzles** tab turns every blunder, missed
+  tactic and trap from your analyzed games into a solve-it-yourself puzzle, grouped by weakness
+  ("walking into forks ×51", "back-rank weaknesses ×19", …) with severity and time-window filters,
+  presented in random order. Tactics and mates play out as **full sequences** — the opponent's
+  replies auto-play and you find every move, mate lines running to the mate — and after your first
+  correct move a red arrow shows what you actually played in the game. No engine time needed:
+  puzzles reuse the stored analysis.
+- **Export puzzles to a Lichess study.** One click turns the current puzzle set into a private
+  Lichess **study** of interactive practice chapters — solution sequence as the mainline to find,
+  your game move annotated `??` as the sideline. (Needs a Lichess token with the `study:write`
+  permission — create one at lichess.org/account/oauth/token and paste it in ⚙ Settings.)
+- **Insights tab.** Your recurring patterns across every analyzed game in a chosen period (today /
+  last 7 days / last 30 days / all time): record + accuracy + blunders-per-game stat tiles, an
+  **accuracy-by-game trend chart**, mistake-severity breakdown, your top weaknesses as bars you can
+  **click to train** in the puzzle trainer, win% lost per game by phase, and most-played openings /
+  time-control tables.
 - **In-browser AI coach (Kibitz).** A "why? / what now?" chat powered by headless `claude -p`
   (your Claude subscription), fed pre-computed engine facts so answers are grounded, not estimated.
 - **Cross-game history + coaching profile.** Every reviewed game is saved locally, tagged with
