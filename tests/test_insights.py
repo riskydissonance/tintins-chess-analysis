@@ -102,3 +102,24 @@ def test_insights_empty_history(data_dir):
     _write([], data_dir)
     out = history.insights(30, data_dir)
     assert out["games"] == 0
+
+
+def test_history_rows_ordered_by_played_date_then_import_time(data_dir):
+    # Played date wins over import (analyzed_at) order; no played date falls back to import day;
+    # same-day games tiebreak on import time.
+    recent_played = _rec("g-recent", _day(1), analyzed_at="2024-01-01T00:00:00Z")
+    old_played_new_import = _rec("g-old", _day(40), analyzed_at="2099-01-01T00:00:00Z")
+    undated = _rec("g-undated", None, analyzed_at=_day(2) + "T12:00:00Z")
+    _write([old_played_new_import, undated, recent_played], data_dir)
+    rows = history.history_rows(data_dir=data_dir)
+    assert [r["game_id"] for r in rows] == ["g-recent", "g-undated", "g-old"]
+
+
+def test_opening_accuracy_ignores_games_without_accuracy(data_dir):
+    # Two Petrov games, only one with an accuracy: the average is that game's 80%, not 40%.
+    no_acc = _rec("g2", _day(1))
+    no_acc["accuracy"] = None
+    _write([_rec("g1", _day(1)), no_acc], data_dir)
+    (petrov,) = history.insights(None, data_dir)["openings"]
+    assert petrov["games"] == 2
+    assert petrov["avg_accuracy"] == 80.0

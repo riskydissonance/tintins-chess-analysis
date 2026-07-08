@@ -143,3 +143,29 @@ def test_404_is_friendly(monkeypatch):
     monkeypatch.setattr(chesscom.httpx, "get", lambda *a, **k: _Resp())
     with pytest.raises(chesscom.ChesscomError, match="404"):
         chesscom.fetch_user_games("nobody")
+
+
+def test_auto_sync_honours_kill_switch(monkeypatch):
+    # CHESS_CHESSCOM_SYNC=0 must stop the launch-time sync (auto=True) without touching the
+    # network, while an explicit user click (auto=False) still syncs.
+    from fastapi.testclient import TestClient
+
+    from server import config
+    from server.web import app as app_module
+
+    monkeypatch.setattr(config, "CHESSCOM_SYNC_ENABLED", False)
+    monkeypatch.setattr(config, "CHESSCOM_USERNAME", "alice")
+
+    def boom(*a, **k):
+        raise AssertionError("disabled auto-sync must not hit the network")
+
+    monkeypatch.setattr(chesscom.httpx, "get", boom)
+    client = TestClient(app_module.create_app())
+    r = client.post("/api/sync/chesscom", json={"auto": True})
+    assert r.status_code == 200
+    assert r.json() == {"new_games": 0, "disabled": True}
+
+    # An explicit click ignores the flag (and here fails on the mocked network as proof it tried).
+    monkeypatch.setattr(chesscom.httpx, "get", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("no net")))
+    r = client.post("/api/sync/chesscom", json={"auto": False})
+    assert r.status_code == 502

@@ -1,0 +1,141 @@
+"""Turn a player's OWN mistakes into puzzles — a "learn from your blunders" trainer.
+
+Every analysed game already stores, per flagged mistake, the position it was played from
+(`fen_before`), the move actually played (`uci`), the engine's best reply (`best_uci`/`best_san`),
+the tactical motif tags (`motifs`), and how much win chance it cost (`win_drop`) — see
+`history.build_game_record`. That's exactly a single-best-move puzzle: sit the solver in the
+position they went wrong in and ask them to find the move they missed.
+
+So puzzles are pure re-use of existing analysis — no engine calls — which keeps this off the
+engine pool entirely. Two entry points:
+
+  - build_puzzles(...)  -> list[Puzzle dicts], hardest-lesson-first, filterable by theme/kind
+  - themes(...)         -> per-motif counts (labelled) for "train your weaknesses" chips
+
+Both draw from the SAME set of games as the Insights panel (`history.my_records`), so a weakness
+the Insights panel names always has puzzles behind it.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+import chess
+
+from server.core import history
+
+# Blunders are the most instructive (biggest swings), then mistakes, then inaccuracies. Used both
+# to sort puzzles hardest-lesson-first and to let the UI offer a severity filter.
+_KIND_ORDER = {"blunder": 0, "mistake": 1, "inaccuracy": 2}
+
+
+def _san(fen: str, uci: str) -> Optional[str]:
+    """SAN for `uci` in `fen`, or None if the move is illegal there (defensive: stored data)."""
+    try:
+        board = chess.Board(fen)
+        move = chess.Move.from_uci(uci)
+        if not board.is_legal(move):  # san() alone doesn't reject illegal moves
+            return None
+        return board.san(move)
+    except (ValueError, AssertionError, KeyError):
+        return None
+
+
+def _puzzle_from_mistake(rec: dict, m: dict) -> Optional[dict]:
+    """One puzzle dict from a stored mistake, or None if it can't be a solvable puzzle.
+
+    A mistake makes a puzzle only when we have the position AND a concrete better move to find,
+    and that better move actually differs from what was played (else there's nothing to solve).
+    """
+    fen = (m.get("fen_before") or "").strip()
+    solution = (m.get("best_uci") or "").strip()
+    played = (m.get("uci") or "").strip()
+    if not fen or not solution or solution == played:
+        return None
+
+    legal_san = _san(fen, solution)
+    if not legal_san:  # unusable solution (illegal in the stored FEN) — skip rather than lie
+        return None
+    solution_san = m.get("best_san") or legal_san
+
+    try:
+        side_to_move = "white" if chess.Board(fen).turn == chess.WHITE else "black"
+    except ValueError:
+        return None
+
+    motifs = list(m.get("motifs") or [])
+    return {
+        "id": f"{rec.get('game_id', '')}:{m.get('ply', 0)}",
+        "game_id": rec.get("game_id"),
+        "game_url": rec.get("game_url"),
+        "date": rec.get("date"),
+        "white": rec.get("white"),
+        "black": rec.get("black"),
+        "opening": rec.get("opening") or rec.get("eco"),
+        "move_number": m.get("move_number"),
+        "color": side_to_move,  # the side to move in the puzzle == the side that blundered == solver
+        "fen": fen,
+        "played_uci": played,
+        "played_san": m.get("san") or _san(fen, played),
+        "solution_uci": solution,
+        "solution_san": solution_san,
+        "classification": m.get("classification"),
+        "phase": m.get("phase"),
+        "win_drop": m.get("win_drop", 0.0),
+        "motifs": motifs,
+        "themes": [history._MOTIF_LABELS.get(x, x) for x in motifs],
+    }
+
+
+def build_puzzles(
+    motif: Optional[str] = None,
+    kinds: Optional[list[str]] = None,
+    days: Optional[int] = None,
+    limit: Optional[int] = None,
+    data_dir: Optional[str] = None,
+) -> list[dict]:
+    """Puzzles built from the user's own mistakes, hardest lesson first.
+
+    `motif` keeps only puzzles tagged with that motif (e.g. "hung_piece", "missed_fork") — the
+    "train this weakness" filter. `kinds` keeps only those classifications (subset of
+    inaccuracy/mistake/blunder; default all). `days` limits to recent games (0/None = all).
+    Sorted blunders-first then by win chance lost, so the biggest, clearest lessons come first.
+    """
+    kept = set(kinds) if kinds else None
+    puzzles: list[dict] = []
+    for rec in history.my_records(days, data_dir):
+        for m in rec.get("mistakes", []):
+            if kept is not None and m.get("classification") not in kept:
+                continue
+            if motif is not None and motif not in (m.get("motifs") or []):
+                continue
+            p = _puzzle_from_mistake(rec, m)
+            if p is not None:
+                puzzles.append(p)
+
+    puzzles.sort(
+        key=lambda p: (_KIND_ORDER.get(p["classification"], 9), -float(p.get("win_drop") or 0.0))
+    )
+    if limit and limit > 0:
+        puzzles = puzzles[:limit]
+    return puzzles
+
+
+def themes(days: Optional[int] = None, data_dir: Optional[str] = None) -> list[dict]:
+    """Per-motif puzzle counts (labelled), most common first — the "your weaknesses" chips.
+
+    Only counts motifs that actually yield a solvable puzzle, so a chip's count matches how many
+    puzzles `build_puzzles(motif=...)` will return.
+    """
+    counts: dict[str, int] = {}
+    for rec in history.my_records(days, data_dir):
+        for m in rec.get("mistakes", []):
+            if _puzzle_from_mistake(rec, m) is None:
+                continue
+            for motif in m.get("motifs") or []:
+                counts[motif] = counts.get(motif, 0) + 1
+    out = [
+        {"motif": k, "label": history._MOTIF_LABELS.get(k, k), "count": v}
+        for k, v in counts.items()
+    ]
+    out.sort(key=lambda t: (-t["count"], t["motif"]))
+    return out

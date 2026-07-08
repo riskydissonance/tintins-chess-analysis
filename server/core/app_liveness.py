@@ -68,9 +68,24 @@ def _expired() -> bool:
         return (now - _last_beat) >= BEAT_TIMEOUT  # backstop
 
 
+def _analysis_running() -> bool:
+    """Is a background game analysis (single or sync batch) in flight?
+
+    While one is, we never self-exit: browsers freeze/discard background tabs (Chrome Memory
+    Saver, Safari tab suspension), which silences the heartbeat exactly during the long syncs the
+    user walked away from — exiting then throws away minutes of engine work and looks like a
+    crash. The exit resumes (and the normal timeouts apply) once the job lands."""
+    try:
+        from server.web import jobs  # inline: core->web is a layering exception, kept call-local
+
+        return jobs.status().get("status") == "pending"
+    except Exception:  # pragma: no cover - liveness must never die on a status probe
+        return False
+
+
 def _run() -> None:
     while not _stop.wait(1):
-        if _expired():
+        if _expired() and not _analysis_running():
             print(
                 "[chess-app] browser closed — shutting the app down.",
                 file=sys.stderr,

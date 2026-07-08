@@ -72,7 +72,7 @@ def _candidates() -> list[str]:
 
 
 def _download(url: str, dest_file: str) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "tintins-chess-analysis"})
+    req = urllib.request.Request(url, headers={"User-Agent": "kibitz-chess-tutor (github.com/Chess-analysis-mcp)"})
     with urllib.request.urlopen(req, timeout=180) as resp, open(dest_file, "wb") as out:
         shutil.copyfileobj(resp, out)
 

@@ -785,13 +785,17 @@ def my_player_id(data_dir: Optional[str] = None) -> str:
 def history_rows(player_id: Optional[str] = None, data_dir: Optional[str] = None) -> list[dict]:
     """Compact, newest-first list of analysed games for the web history panel.
 
+    Newest-first by the day the game was PLAYED (the PGN date), falling back to when it was
+    imported/analysed for records with no date; same-day games tiebreak on import time. So a
+    freshly imported old game files under its played date instead of jumping to the top.
+
     Filtered to `player_id` when given (the panel passes `my_player_id()` for "just my games").
     Each row reuses fields already on the record — no recompute — plus `has_pgn` so the frontend
     knows whether the game can be reopened (records written before PGNs were stored can't be).
     """
     records = sorted(
         load_records(player_id=player_id, data_dir=data_dir),
-        key=lambda r: r.get("analyzed_at", ""),
+        key=lambda r: (_record_day(r), r.get("analyzed_at", "")),
         reverse=True,
     )
     # "Is this me?" is computed at READ time against the CURRENT identity config, not from the
@@ -840,6 +844,36 @@ def _record_day(r: dict) -> str:
     return d if d else (r.get("analyzed_at") or "")[:10]
 
 
+def my_records(days: Optional[int] = None, data_dir: Optional[str] = None) -> list[dict]:
+    """The configured user's analysed games, optionally within the last `days` (0/None = all).
+
+    "Mine" resolves through identities.json so games under any of the user's handles (Lichess +
+    chess.com + aliases) count as one person. With no identity configured (a paste-only user),
+    everything is "mine" — same philosophy as the "My games" list. Shared by `insights` and the
+    puzzle trainer so both draw from exactly the same set of games.
+    """
+    records = load_records(data_dir=data_dir)
+    if (config.USERNAME or "").strip():
+        me = my_player_id(data_dir)
+        # Memoised per (handle, platform): _resolves_to_me re-reads identities.json each call,
+        # and a history has many records but only a handful of distinct handles.
+        mine: dict[tuple, bool] = {}
+
+        def _is_mine(r: dict) -> bool:
+            if r.get("player_id") == me:
+                return True
+            key = (r.get("player_name") or r.get("player_id") or "", r.get("platform"))
+            if key not in mine:
+                mine[key] = _resolves_to_me(key[0], key[1], data_dir)
+            return mine[key]
+
+        records = [r for r in records if _is_mine(r)]
+    if days and days > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        records = [r for r in records if _record_day(r) >= cutoff]
+    return records
+
+
 def insights(days: Optional[int] = None, data_dir: Optional[str] = None) -> dict:
     """Aggregate stats + recurring themes for the configured user's games in a time window.
 
@@ -848,22 +882,7 @@ def insights(days: Optional[int] = None, data_dir: Optional[str] = None) -> dict
     frontend can render them directly.
     """
     me = my_player_id(data_dir)
-    records = load_records(data_dir=data_dir)
-    # With an identity configured, insights are about "you". Without one (e.g. a paste-only user
-    # who never set a username), aggregate everything — same philosophy as the "My games" list.
-    if (config.USERNAME or "").strip():
-        records = [
-            r
-            for r in records
-            if r.get("player_id") == me
-            or _resolves_to_me(
-                r.get("player_name") or r.get("player_id") or "", r.get("platform"), data_dir
-            )
-        ]
-    if days and days > 0:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-        records = [r for r in records if _record_day(r) >= cutoff]
-
+    records = my_records(days, data_dir)
     agg = _aggregate(records)
     for m in agg.get("top_motifs", []):
         m["label"] = _MOTIF_LABELS.get(m["motif"], m["motif"])
@@ -895,10 +914,11 @@ def _aggregate(records: list[dict]) -> dict:
         for m in r.get("mistakes", []):
             motifs.update(m.get("motifs", []))
         op = r.get("opening") or r.get("eco") or "Unknown"
-        st = openings.setdefault(op, {"games": 0, "acc_sum": 0.0})
+        st = openings.setdefault(op, {"games": 0, "acc_sum": 0.0, "acc_n": 0})
         st["games"] += 1
         if r.get("accuracy") is not None:
             st["acc_sum"] += r["accuracy"]
+            st["acc_n"] += 1
         # Per-mode (bullet/blitz/rapid/...) breakdown, so coaching can apply mode-appropriate
         # expectations and call out where a player's patterns differ by speed.
         sp = r.get("speed") or "unknown"
@@ -935,7 +955,7 @@ def _aggregate(records: list[dict]) -> dict:
                     {
                         "opening": k,
                         "games": v["games"],
-                        "avg_accuracy": round(v["acc_sum"] / v["games"], 1) if v["games"] else None,
+                        "avg_accuracy": round(v["acc_sum"] / v["acc_n"], 1) if v["acc_n"] else None,
                     }
                     for k, v in openings.items()
                 ),

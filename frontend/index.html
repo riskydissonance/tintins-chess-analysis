@@ -82,17 +82,19 @@
             <button id="next-mistake" title="Next mistake (n)">Mistake ›</button>
             <button id="reset" title="Snap back to the move under review">↩ Reset to move</button>
           </div>
-          <label class="toggle" title="Toggle best-move arrows (l)">
-            <input type="checkbox" id="best-toggle" /> Show best move
+          <label class="toggle" title="Toggle best-move arrows (l) — green = what should have been played instead of the dark played-move arrow (all green: the played move WAS best)">
+            <input type="checkbox" id="best-toggle" checked /> Show best move
           </label>
           <label class="toggle" title="Toggle threat arrows (t) — what the side that just moved is threatening, in yellow">
-            <input type="checkbox" id="threat-toggle" /> Show threats
+            <input type="checkbox" id="threat-toggle" checked /> Show threats
           </label>
           <button id="flip-review" type="button" hidden
             title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Review other side</button>
         </div>
 
         <div id="status" class="status"></div>
+        <!-- Puzzle-mode controls (hidden outside the trainer): Reveal / Next / Exit. -->
+        <div id="puzzle-controls" class="controls puzzle-controls" hidden></div>
       </section>
 
       <!-- iPad-split-view-style drag handle: drag left/right to resize the board (and reflow the
@@ -150,6 +152,29 @@
           <button id="mode-lichess" type="button">Lichess</button>
           <button id="mode-chesscom" type="button">Chess.com</button>
           <button id="mode-paste" type="button">Paste PGN</button>
+          <button id="mode-puzzles" type="button">Puzzles</button>
+        </div>
+
+        <!-- Puzzle trainer: drills built from YOUR analyzed mistakes (no new engine work). Pick a
+             weakness chip to train it; export the set to a Lichess study of practice chapters. -->
+        <div id="puzzles-panel" class="puzzles-panel" style="display:none">
+          <div class="puzzles-head">
+            <span class="muted">Train the mistakes from your own games.</span>
+            <select id="puzzle-days" title="Which games to build puzzles from"
+              aria-label="Puzzle time period">
+              <option value="0" selected>All time</option>
+              <option value="30">Last 30 days</option>
+              <option value="7">Last 7 days</option>
+            </select>
+          </div>
+          <div id="puzzle-themes" class="puzzle-themes"></div>
+          <div class="puzzles-export">
+            <button type="button" id="puzzle-export"
+              title="Create a private Lichess study from these puzzles — one interactive practice chapter per mistake. Needs a Lichess token with the study:write permission (⚙ Settings).">
+              ▲ Send to Lichess study
+            </button>
+            <div id="puzzle-export-status" class="muted"></div>
+          </div>
         </div>
         <form id="lichess-form" class="lichess-form" style="display:none">
           <div class="lichess-row">

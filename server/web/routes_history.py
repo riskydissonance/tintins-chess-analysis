@@ -17,7 +17,9 @@ from server.core import chesscom
 from server.core import game_analysis
 from server.core import history
 from server.core import lichess
+from server.core import lichess_study
 from server.core import multipgn
+from server.core import puzzles
 from server.web import jobs
 
 router = APIRouter()
@@ -31,6 +33,7 @@ class AnalyzeBody(BaseModel):
 class SyncBody(BaseModel):
     username: str = ""  # blank -> the configured chess.com handle
     max: int = 0  # how many recent games to check; 0 -> config.CHESSCOM_SYNC_MAX
+    auto: bool = False  # launch-time sync (honours CHESS_CHESSCOM_SYNC=0) vs an explicit user click
 
 
 class AnalyzeBatchBody(BaseModel):
@@ -115,6 +118,8 @@ def post_sync_chesscom(body: SyncBody | None = None) -> JSONResponse:
     analysis of any not seen before — so they land in "My games" with no paste/upload. Returns the
     batch bootstrap (first game's PGN + side) when something new was found, else {"new_games": 0}.
     """
+    if body and body.auto and not config.CHESSCOM_SYNC_ENABLED:
+        return JSONResponse({"new_games": 0, "disabled": True})
     username = ((body.username if body else "") or config.CHESSCOM_USERNAME or "").strip()
     if not username:
         return JSONResponse({"error": "No chess.com username configured."}, status_code=400)
@@ -183,3 +188,75 @@ def post_analyze_batch(body: AnalyzeBatchBody) -> JSONResponse:
 def get_analysis_status() -> dict:
     """Poll target while a background analysis runs: idle | pending | ready | error."""
     return jobs.status()
+
+
+# --- Puzzle trainer: solve your own mistakes, and export them to a Lichess study ----------------
+_KINDS = ("inaccuracy", "mistake", "blunder")
+
+
+def _parse_kinds(kinds: str) -> list[str] | None:
+    """Comma-separated classification filter -> validated list (None = all)."""
+    picked = [k.strip() for k in (kinds or "").split(",") if k.strip() in _KINDS]
+    return picked or None
+
+
+class StudyBody(BaseModel):
+    name: str = ""  # study title; blank -> a sensible default
+    motif: str = ""  # blank -> all motifs
+    kinds: str = ""  # comma-separated subset of inaccuracy,mistake,blunder; blank -> all
+    days: int = 0  # 0 -> all history
+    limit: int = 60  # cap chapters (Lichess allows 64 per study)
+
+
+@router.get("/puzzles")
+def get_puzzles(motif: str = "", kinds: str = "", days: int = 0, limit: int = 0) -> dict:
+    """Puzzles built from the configured user's own mistakes (hardest lesson first).
+
+    `motif` trains one weakness (e.g. "hung_piece"); `kinds` filters severity; `days` limits to
+    recent games. No engine work — pure re-use of stored analysis."""
+    try:
+        items = puzzles.build_puzzles(
+            motif=motif or None,
+            kinds=_parse_kinds(kinds),
+            days=days or None,
+            limit=limit or None,
+        )
+    except Exception as exc:  # pragma: no cover - a trainer must never break the board
+        return {"puzzles": [], "error": str(exc)}
+    return {"count": len(items), "puzzles": items}
+
+
+@router.get("/puzzles/themes")
+def get_puzzle_themes(days: int = 0) -> dict:
+    """Per-motif puzzle counts (labelled) for the "train your weaknesses" chips."""
+    try:
+        return {"themes": puzzles.themes(days=days or None)}
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"themes": [], "error": str(exc)}
+
+
+@router.post("/puzzles/lichess-study")
+def post_lichess_study(body: StudyBody) -> JSONResponse:
+    """Export the current puzzle selection to a new (private) Lichess study, one practice chapter
+    per mistake. Needs a Lichess token with the study:write scope (⚙ Settings → Lichess token)."""
+    items = puzzles.build_puzzles(
+        motif=body.motif or None,
+        kinds=_parse_kinds(body.kinds),
+        days=body.days or None,
+        limit=body.limit or lichess_study.MAX_CHAPTERS,
+    )
+    if not items:
+        return JSONResponse({"error": "No puzzles match — analyze some games first."}, status_code=400)
+    name = (body.name or "").strip() or _default_study_name(body, len(items))
+    try:
+        result = lichess_study.create_study(name, items)
+    except lichess_study.StudyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    return JSONResponse(result)
+
+
+def _default_study_name(body: StudyBody, n: int) -> str:
+    label = ""
+    if body.motif:
+        label = " · " + history._MOTIF_LABELS.get(body.motif, body.motif)
+    return f"Kibitz — my {n} puzzles to review{label}"

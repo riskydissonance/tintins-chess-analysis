@@ -878,6 +878,32 @@ body.history-hidden .history-col { display: none; }
   display: flex; justify-content: space-between; gap: 8px;
 }
 
+/* --- puzzle trainer -------------------------------------------------------------------------
+   The Puzzles tab in the Games panel: weakness chips (one per recurring motif) + the Lichess
+   study export; plus the Reveal/Next control bar that appears under the board while drilling. */
+.puzzles-panel { margin-bottom: 10px; font-size: 13px; }
+.puzzles-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.puzzles-head select {
+  background: var(--panel2); color: var(--text); border: 1px solid #000; border-radius: 5px;
+  font-size: 12.5px; padding: 3px 6px;
+}
+.puzzle-themes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.puzzle-chip {
+  background: var(--panel2); color: var(--text); border: 1px solid #000; border-radius: 14px;
+  font-size: 12.5px; padding: 4px 10px; cursor: pointer; text-align: left;
+}
+.puzzle-chip:hover { border-color: var(--accent); }
+.puzzle-chip .chip-n { color: var(--muted); margin-left: 4px; }
+.puzzles-export { border-top: 1px solid #000; padding-top: 8px; }
+.puzzles-export button {
+  background: var(--accent); color: #fff; border: 1px solid #000; border-radius: 6px;
+  font-size: 13px; padding: 6px 10px; cursor: pointer;
+}
+.puzzles-export button:disabled { opacity: 0.55; cursor: default; }
+#puzzle-export-status { margin-top: 6px; font-size: 12.5px; }
+.puzzle-controls { align-items: center; }
+.puzzle-controls .pz-context { font-size: 12.5px; color: var(--muted); }
+
 /* --- responsive: smaller laptops / windows -------------------------------------------------
    The third (Games) column needs ~1400px to sit beside the board + analysis columns. Below that
    it becomes an off-canvas drawer that slides in from the right (toggled by ☰ Games / closed by ×

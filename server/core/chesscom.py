@@ -77,13 +77,10 @@ def _date_from(epoch: int | None) -> str | None:
     return datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc).strftime("%Y.%m.%d")
 
 
-_RESULT_WORDS_WIN = ("win",)
-
-
 def _result_from(white_result: str, black_result: str) -> str:
-    if white_result in _RESULT_WORDS_WIN:
+    if white_result == "win":
         return "1-0"
-    if black_result in _RESULT_WORDS_WIN:
+    if black_result == "win":
         return "0-1"
     if white_result or black_result:  # both non-win codes (agreed, repetition, stalemate, ...)
         return "1/2-1/2"

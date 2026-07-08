@@ -48,17 +48,23 @@ def _probe_online() -> bool:
 
 
 @router.post("/ping")
-def post_ping() -> dict:
+async def post_ping() -> dict:
     """App-mode heartbeat (backstop): the open tab calls this periodically. A long silence means the
-    tab is gone; the app-liveness watchdog then shuts the standalone server down. No-op otherwise."""
+    tab is gone; the app-liveness watchdog then shuts the standalone server down. No-op otherwise.
+
+    `async` on purpose (unlike this file's other handlers): it runs on the event loop instead of
+    the shared threadpool, so a burst of slow engine-bound requests can never queue the heartbeat
+    behind them — a starved heartbeat looks exactly like a closed tab and got the server killed
+    mid-analysis (os._exit in app_liveness)."""
     app_liveness.beat()
     return {"ok": True}
 
 
 @router.post("/closing")
-def post_closing() -> dict:
+async def post_closing() -> dict:
     """App-mode close beacon: the tab fires this on `pagehide` (close/refresh). After a short grace
-    with no heartbeat (i.e. not a refresh) the server exits. Sent via navigator.sendBeacon."""
+    with no heartbeat (i.e. not a refresh) the server exits. Sent via navigator.sendBeacon.
+    `async` for the same reason as /ping: the liveness signals must never wait on the threadpool."""
     app_liveness.closing()
     return {"ok": True}
 
@@ -173,6 +179,13 @@ def best_moves(body: BestMovesBody) -> JSONResponse:
 
     depth = body.depth or config.DEFAULT_DEPTH
     info = lines.engine_line(body.fen, depth=depth, multipv=max(1, body.multipv))
+    return JSONResponse(
+        {"side_to_move": info["side_to_move"], "depth": depth, "moves": _moves_from_info(info)}
+    )
+
+
+def _moves_from_info(info: dict) -> list[dict]:
+    """First move of each engine line as the arrow payload the board draws (uci/san/win%/eval)."""
     src = info.get("lines") or [
         {
             "line_uci": info["line_uci"],
@@ -181,7 +194,7 @@ def best_moves(body: BestMovesBody) -> JSONResponse:
             "eval": info["eval"],
         }
     ]
-    moves = [
+    return [
         {
             "uci": ln["line_uci"][0],
             "san": ln["line_san"][0] if ln.get("line_san") else None,
@@ -191,7 +204,6 @@ def best_moves(body: BestMovesBody) -> JSONResponse:
         for ln in src
         if ln.get("line_uci")
     ]
-    return JSONResponse({"side_to_move": info["side_to_move"], "depth": depth, "moves": moves})
 
 
 @router.post("/threats")
@@ -209,28 +221,14 @@ def threats(body: BestMovesBody) -> JSONResponse:
     if board.is_check() or board.is_game_over():
         return JSONResponse({"moves": []})
     board.push(chess.Move.null())
+    if board.is_game_over():  # opponent has no legal reply (e.g. stalemate after the pass)
+        return JSONResponse({"moves": []})
 
     depth = body.depth or config.DEFAULT_DEPTH
     info = lines.engine_line(board.fen(), depth=depth, multipv=max(1, body.multipv))
-    src = info.get("lines") or [
-        {
-            "line_uci": info["line_uci"],
-            "line_san": info["line_san"],
-            "win_percent": info["win_percent"],
-            "eval": info["eval"],
-        }
-    ]
-    moves = [
-        {
-            "uci": ln["line_uci"][0],
-            "san": ln["line_san"][0] if ln.get("line_san") else None,
-            "win_percent": ln["win_percent"],
-            "eval": ln["eval"],
-        }
-        for ln in src
-        if ln.get("line_uci")
-    ]
-    return JSONResponse({"side_to_move": info["side_to_move"], "depth": depth, "moves": moves})
+    return JSONResponse(
+        {"side_to_move": info["side_to_move"], "depth": depth, "moves": _moves_from_info(info)}
+    )
 
 
 @router.get("/position/{index}")

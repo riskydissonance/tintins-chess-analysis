@@ -29,16 +29,28 @@ let exploreBaseNode = 0; // node we left the timeline from
 // null = none, "pending" = evaluating, move dict = result, {error:true} = failed.
 let exploreVerdict = null;
 
-let bestArrowOn = false;
+// Both arrow kinds are ON by default; `...Wanted` remembers the user's choice so the forced-off
+// state during an analysis sweep (see setAnalyzingUI) restores their preference afterwards.
+let bestArrowOn = true;
+let bestArrowWanted = true;
 // Live best-move arrows: progressively deepen and refine while you sit on a position,
 // cancelled the moment the position changes, with a hard time cap so it never runs forever.
+// They grade the move just completed on the board: the search runs from the position that move
+// was played FROM, and when the played move was itself the engine's best, `playedWasBest`
+// collapses the dark played-move arrow and the green best-move arrow into one green arrow.
 let bestArrows = [];
+let playedWasBest = false;
 // Threat arrows (yellow): what the side that just moved is threatening to play next
 // (a null-move engine search server-side). Toggled like the best-move arrows.
-let threatArrowOn = false;
+let threatArrowOn = true;
+let threatArrowWanted = true;
 let threatArrows = [];
 const THREAT_DEPTH = 16; // one fixed-depth probe is enough for "what's the threat?"
 let searchGen = 0; // bumped on every position change to invalidate in-flight searches
+// Abort superseded engine requests instead of letting them run to completion server-side:
+// scrubbing with arrows on used to stack abandoned /best-moves calls on the (2-process) engine
+// pool, starving other requests — including the app-mode heartbeat, which read as a closed tab.
+let searchAbort = null;
 const SEARCH_DEPTHS = [14, 18, 22]; // escalating precision; arrows update after each
 const SEARCH_MAX_MS = 5000; // stop deepening after this, even if more depth is available
 const SEARCH_DEBOUNCE_MS = 120; // coalesce rapid navigation before hitting the engine
@@ -56,16 +68,18 @@ let historyMode = "normal"; // "normal" (local games) | "lichess" | "chesscom" |
 let myPlayerId = ""; // configured user's id, for inferring side on lichess lookups
 let pollTimer = null; // analysis-status poller
 let batchInfo = null; // {total, self_handle, lastDone} while a multi-game upload is analyzing
-let lichessCount = 5; // how many recent lichess games to show ("Load more" grows it)
-let lichessUser = ""; // the handle currently shown in lichess mode (for "Load more")
+// Remote tabs (Lichess / Chess.com) share one loader; per-provider paging + shown handle.
+const remoteCount = { lichess: 5, chesscom: 5 }; // how many recent games to show ("Load more" grows it)
+const remoteUser = { lichess: "", chesscom: "" }; // the handle currently shown (for "Load more")
 const LICHESS_PAGE = 5; // initial count + how many more each "Load more"
-let chesscomCount = 5; // paging for the Chess.com tab, same scheme as lichess
-let chesscomUser = "";
 // "My games": /api/history returns every analysed game; we render them in pages (inside the
 // fixed-height scroll box) so the list starts short and grows on "Show more", not the page.
 let historyGames = []; // all rows from the last /api/history fetch
 let historyCount = 10; // how many to show now ("Show more" grows it)
 const HISTORY_PAGE = 10; // initial count + how many more each "Show more"
+// Puzzle trainer: when non-null the board is a "solve your own mistake" drill, not a game review.
+// { list:[puzzle...], idx, filter:{motif}, tries, revealed, solved }. See the puzzle section below.
+let puzzle = null;
 
 // App mode (double-click launcher): on open, auto-load the user's most recent game.
 // `appUsername` is the Lichess handle (config.LICHESS_USERNAME); it drives "open my latest game"
@@ -128,13 +142,20 @@ function renderBoard() {
 function arrowShape(uci, brush) {
   return { orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush };
 }
+// The board shows the position AFTER the selected move, so the move just completed on the board
+// is the one stored at timeline[cur - 1] (null at the starting position). Every "which move is
+// this?" site goes through here so the convention lives in one place.
+function completedNode() {
+  return cur > 0 ? timeline[cur - 1] || null : null;
+}
 function drawArrows() {
   const shapes = [];
-  // The move you actually played in-game — only at the review position. The board shows the
-  // position AFTER the selected move, so the completed move is timeline[cur - 1]. Grey = neutral
-  // "here's what you did", not a colour-coded judgement.
-  if (!exploring && !analyzing && cur === anchorNode && cur > 0 && timeline[cur - 1] && timeline[cur - 1].move_uci) {
-    shapes.push(arrowShape(timeline[cur - 1].move_uci, "grey"));
+  // The move just completed on the board, as a dark arrow — "here's what was played", not a
+  // judgement. Suppressed when the engine confirmed it WAS the best move: then the single green
+  // best-move arrow sits on the same squares and green alone says "played + best" at a glance.
+  const done = completedNode();
+  if (!exploring && !analyzing && done && done.move_uci && !(bestArrowOn && playedWasBest)) {
+    shapes.push(arrowShape(done.move_uci, "grey"));
   }
   if (bestArrowOn) for (const a of bestArrows) shapes.push(a);
   if (threatArrowOn) for (const a of threatArrows) shapes.push(a);
@@ -172,19 +193,34 @@ function movesToArrows(moves, brush = "green", boldWidth = 13) {
 // searchGen so any in-flight search for a previous position cancels itself; each enabled
 // arrow kind then fetches independently.
 function refreshBestMoves() {
+  if (puzzle) return; // trainer: engine arrows would draw the solution — the drill owns the board
   searchGen += 1; // cancel any in-flight search
+  if (searchAbort) searchAbort.abort(); // stop its request chain (no further depths get sent)
+  searchAbort = new AbortController();
   bestArrows = [];
   threatArrows = [];
+  playedWasBest = false;
   drawArrows();
   const myGen = searchGen;
-  const fen = chess.fen();
-  if (bestArrowOn) deepenBestMoves(fen, myGen);
-  if (threatArrowOn) fetchThreats(fen, myGen);
+  // Best-move arrows grade the move just completed on the board, so they search the position it
+  // was played FROM ("what should have been played"), not the current position (which would give
+  // the best REPLY). At the start position, or while exploring your own lines, there's no
+  // completed timeline move — then they show the best move to play now.
+  const done = !exploring ? completedNode() : null;
+  if (bestArrowOn) {
+    deepenBestMoves(done && done.fen ? done.fen : chess.fen(), myGen, done ? done.move_uci : null);
+  }
+  // Threat arrows are about the position on the board: what the side that just moved would do
+  // next if it could move again (null-move search on the CURRENT position).
+  if (threatArrowOn) fetchThreats(chess.fen(), myGen);
 }
 
 // Run an escalating-depth best-move search; cancels itself on any position change (searchGen)
-// and stops after SEARCH_MAX_MS.
-async function deepenBestMoves(fen, myGen) {
+// and stops after SEARCH_MAX_MS. `playedUci` is the move actually played from `fen` (if any):
+// when it matches the engine's best, the played move gets the single bold green arrow and the
+// dark played-move arrow is dropped (see drawArrows).
+async function deepenBestMoves(fen, myGen, playedUci) {
+  const signal = searchAbort && searchAbort.signal; // this generation's abort handle
   await sleep(SEARCH_DEBOUNCE_MS); // coalesce rapid arrow-key scrubbing
   if (myGen !== searchGen) return;
   const t0 = performance.now();
@@ -196,13 +232,17 @@ async function deepenBestMoves(fen, myGen) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fen, depth, multipv: 3 }),
+        signal,
       }).then((r) => r.json());
     } catch (_) {
-      return;
+      return; // aborted (superseded) or network error — either way this search is done
     }
     if (myGen !== searchGen) return; // superseded while the engine was thinking
     if (res && res.moves && res.moves.length) {
-      bestArrows = movesToArrows(res.moves);
+      playedWasBest = playedUci != null && res.moves[0].uci === playedUci;
+      // Played the best move: one green arrow over it says played + best; alternatives would
+      // only clutter a move that needs no correcting.
+      bestArrows = movesToArrows(playedWasBest ? res.moves.slice(0, 1) : res.moves);
       drawArrows();
     }
     if (performance.now() - t0 > SEARCH_MAX_MS) break; // time cap
@@ -212,6 +252,7 @@ async function deepenBestMoves(fen, myGen) {
 // One fixed-depth null-move probe: what does the side that just moved threaten to play next?
 // Drawn as yellow arrows, slightly thinner than the green best-move arrows.
 async function fetchThreats(fen, myGen) {
+  const signal = searchAbort && searchAbort.signal; // this generation's abort handle
   await sleep(SEARCH_DEBOUNCE_MS);
   if (myGen !== searchGen) return;
   let res;
@@ -220,9 +261,10 @@ async function fetchThreats(fen, myGen) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fen, depth: THREAT_DEPTH, multipv: 3 }),
+      signal,
     }).then((r) => r.json());
   } catch (_) {
-    return;
+    return; // aborted (superseded) or network error — either way this probe is done
   }
   if (myGen !== searchGen) return;
   if (res && res.moves) {
@@ -305,8 +347,8 @@ function updateStatus() {
     $("ret").onclick = returnToReview;
   } else {
     el.className = "status";
-    // The board shows the position after the completed move, so grade that move (cur - 1).
-    const g = cur > 0 && timeline[cur - 1] ? classGlyph(timeline[cur - 1].classification) : "";
+    const done = completedNode(); // grade the move just completed on the board
+    const g = done ? classGlyph(done.classification) : "";
     el.innerHTML = g + escapeHtml(currentPrompt || nodeLabel(cur));
   }
 }
@@ -316,11 +358,12 @@ function gotoNode(n) {
   exploring = false;
   cur = clamp(n, 0, timeline.length - 1);
   evalShapes = [];
-  // chat context: the board shows the position AFTER the move at timeline[cur - 1], so that's
-  // the move in question — chatFen is the position it was played from.
-  if (cur > 0 && timeline[cur - 1] && timeline[cur - 1].move_san) {
-    chatFen = timeline[cur - 1].fen;
-    chatMove = timeline[cur - 1].move_san;
+  // chat context: the move just completed on the board is the move in question — chatFen is
+  // the position it was played from.
+  const done = completedNode();
+  if (done && done.move_san) {
+    chatFen = done.fen;
+    chatMove = done.move_san;
   } else {
     chatFen = timeline[cur] ? timeline[cur].fen : null;
     chatMove = null;
@@ -353,7 +396,7 @@ function flipBoard() {
 function toggleBestArrows() {
   const box = $("best-toggle");
   box.checked = !box.checked;
-  bestArrowOn = box.checked;
+  bestArrowOn = bestArrowWanted = box.checked;
   refreshBestMoves();
 }
 
@@ -361,7 +404,7 @@ function toggleBestArrows() {
 function toggleThreatArrows() {
   const box = $("threat-toggle");
   box.checked = !box.checked;
-  threatArrowOn = box.checked;
+  threatArrowOn = threatArrowWanted = box.checked;
   refreshBestMoves();
 }
 
@@ -403,6 +446,7 @@ async function syncExplore() {
 
 // --- user moves ----------------------------------------------------------
 async function onUserMove(orig, dest) {
+  if (puzzle) return onPuzzleMove(orig, dest); // puzzle trainer owns the board while active
   const moverColor = turnColor();
   const fenBefore = chess.fen();
   const promo = isPromotion(orig, dest) ? "q" : undefined;
@@ -712,7 +756,7 @@ function highlightCurrentMove() {
   if (!ol) return;
   let active = null;
   ol.querySelectorAll(".ply[data-node]").forEach((el) => {
-    // The board shows the position after the completed move, so the current move is cur - 1.
+    // completedNode()'s convention: the move on the board is the one at index cur - 1.
     const on = Number(el.dataset.node) === cur - 1;
     el.classList.toggle("active", on);
     if (on) active = el;
@@ -1228,7 +1272,8 @@ async function maybeAutoload() {
 
 // Auto-sync: ask the server to fetch the configured chess.com user's newest games and analyze the
 // ones history hasn't seen. Returns true when a sync batch was started (the board shows its first
-// game). `quiet` suppresses the "nothing new" message (used on app launch).
+// game). `quiet` marks the automatic launch-time sync: it suppresses the "nothing new" message and
+// lets the server honour CHESS_CHESSCOM_SYNC=0 (an explicit ⟳ click always syncs).
 async function syncChesscom(quiet) {
   if (!chesscomUsername) return false;
   if (!quiet) $("history-status").textContent = "Syncing chess.com games…";
@@ -1237,7 +1282,7 @@ async function syncChesscom(quiet) {
     res = await fetch("/api/sync/chesscom", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ auto: !!quiet }),
     }).then((r) => r.json());
   } catch (_) {
     if (!quiet) $("history-status").textContent = "Could not reach Chess.com.";
@@ -1386,10 +1431,18 @@ function setAnalyzingUI(on) {
   $("best-toggle").disabled = on; // engine pool is busy with the sweep
   $("threat-toggle").disabled = on;
   if (on) {
+    // Force the arrows off during the sweep (the pool is busy), but remember the user's
+    // preference (`...Wanted`) so they come back by themselves when the analysis lands.
     bestArrowOn = false;
     $("best-toggle").checked = false;
     threatArrowOn = false;
     $("threat-toggle").checked = false;
+  } else if (bestArrowOn !== bestArrowWanted || threatArrowOn !== threatArrowWanted) {
+    bestArrowOn = bestArrowWanted;
+    $("best-toggle").checked = bestArrowWanted;
+    threatArrowOn = threatArrowWanted;
+    $("threat-toggle").checked = threatArrowWanted;
+    refreshBestMoves();
   }
   const box = $("analysis-progress");
   if (box) box.hidden = !on;
@@ -1424,6 +1477,10 @@ function renderProgress(st) {
 // Set up the board to navigate a PGN immediately (provisional timeline, no engine yet) and reset
 // per-game UI state. Shared by single-game opens and the first game of a batch upload.
 function beginProvisional(pgn, side, metaText) {
+  if (puzzle) {
+    puzzle = null; // opening a game ends the drill; the board belongs to the review again
+    $("puzzle-controls").hidden = true;
+  }
   analyzing = true;
   currentMistake = -1;
   anchorNode = 0;
@@ -1584,6 +1641,12 @@ async function onAnalysisReady() {
   setAnalyzingUI(false); // hides the progress bar
   applySession(session);
   applyTimeline(tl);
+  if (puzzle) {
+    // Mid-drill: don't yank the board over to the finished game — the session/timeline are
+    // loaded, so Exit puzzles (or opening it from My games) shows it without a refetch.
+    if (historyMode === "normal") loadHistory();
+    return;
+  }
   // Keep the user where they were navigating; if they hadn't moved, jump to the first mistake.
   if (prevCur === 0 && mistakes.length) selectMistake(session.current_index ?? 0);
   else gotoNode(clamp(prevCur, 0, timeline.length - 1));
@@ -1625,7 +1688,7 @@ async function loadHistory(doneMsg) {
   historyCount = HISTORY_PAGE; // a fresh fetch resets paging back to the first page
   renderMyGames();
   $("history-status").textContent = historyGames.length ? doneMsg || "" : "No analyzed games yet.";
-  loadInsights(); // the aggregate reflects whatever just landed in history
+  scheduleInsights(); // the aggregate reflects whatever just landed in history
 }
 
 // Render the current page of "My games" into the (fixed-height, scrollable) list, with a
@@ -1645,17 +1708,35 @@ function renderMyGames() {
   }
 }
 
-async function loadLichess(username) {
-  lichessUser = username;
-  $("history-status").textContent = "Fetching from Lichess…";
+// The two remote-games tabs differ only in endpoint, label, whose games "auto" side-inference
+// falls back to, and Lichess's "is this account already me?" reflection — one table entry each.
+const REMOTE_PROVIDERS = {
+  lichess: {
+    label: "Lichess",
+    endpoint: "/api/lichess/games",
+    defaultWho: () => myPlayerId,
+    onLoaded: (who) => reflectSetAsMe(who), // is the looked-up account already "me"?
+  },
+  chesscom: {
+    label: "Chess.com",
+    endpoint: "/api/chesscom/games",
+    defaultWho: () => chesscomUsername,
+    onLoaded: null,
+  },
+};
+
+async function loadRemote(provider, username) {
+  const p = REMOTE_PROVIDERS[provider];
+  remoteUser[provider] = username;
+  $("history-status").textContent = `Fetching from ${p.label}…`;
   const q = new URLSearchParams();
   if (username) q.set("username", username);
-  q.set("max", String(lichessCount));
+  q.set("max", String(remoteCount[provider]));
   let data;
   try {
-    data = await fetch("/api/lichess/games?" + q.toString()).then((r) => r.json());
+    data = await fetch(p.endpoint + "?" + q.toString()).then((r) => r.json());
   } catch (_) {
-    $("history-status").textContent = "Could not reach Lichess.";
+    $("history-status").textContent = `Could not reach ${p.label}.`;
     return;
   }
   if (data.error) {
@@ -1664,52 +1745,18 @@ async function loadLichess(username) {
     return;
   }
   const games = data.games || [];
-  const who = (username || myPlayerId || "").toLowerCase();
-  reflectSetAsMe(who); // is the looked-up account already "me"?
-  renderHistory(games, "lichess", who);
+  const who = (username || p.defaultWho() || "").toLowerCase();
+  if (p.onLoaded) p.onLoaded(who);
+  renderHistory(games, "remote", who);
   $("history-status").textContent = games.length ? "" : "No games found.";
   // While the server keeps returning a full page, there are probably more to fetch.
-  if (games.length >= lichessCount) {
+  if (games.length >= remoteCount[provider]) {
     const li = document.createElement("li");
     li.className = "load-more";
     li.textContent = "Load more";
     li.addEventListener("click", () => {
-      lichessCount += LICHESS_PAGE;
-      loadLichess(lichessUser);
-    });
-    $("history-list").appendChild(li);
-  }
-}
-
-async function loadChesscom(username) {
-  chesscomUser = username;
-  $("history-status").textContent = "Fetching from Chess.com…";
-  const q = new URLSearchParams();
-  if (username) q.set("username", username);
-  q.set("max", String(chesscomCount));
-  let data;
-  try {
-    data = await fetch("/api/chesscom/games?" + q.toString()).then((r) => r.json());
-  } catch (_) {
-    $("history-status").textContent = "Could not reach Chess.com.";
-    return;
-  }
-  if (data.error) {
-    $("history-status").textContent = data.error;
-    $("history-list").innerHTML = "";
-    return;
-  }
-  const games = data.games || [];
-  const who = (username || chesscomUsername || "").toLowerCase();
-  renderHistory(games, "lichess", who); // same remote-games rendering as the Lichess tab
-  $("history-status").textContent = games.length ? "" : "No games found.";
-  if (games.length >= chesscomCount) {
-    const li = document.createElement("li");
-    li.className = "load-more";
-    li.textContent = "Load more";
-    li.addEventListener("click", () => {
-      chesscomCount += LICHESS_PAGE;
-      loadChesscom(chesscomUser);
+      remoteCount[provider] += LICHESS_PAGE;
+      loadRemote(provider, remoteUser[provider]);
     });
     $("history-list").appendChild(li);
   }
@@ -1770,6 +1817,14 @@ function renderHistory(games, mode, who) {
 // server-side from the analyzed-games history (GET /api/insights). Refreshed whenever the
 // history list reloads (i.e. as new games are analyzed) and when the period changes.
 let insightsDays = 30;
+let insightsTimer = null;
+
+// Coalesce refresh bursts into one fetch: during a multi-game sync, every finished game reloads
+// the history list, and re-aggregating the whole history once per game would be wasted work.
+function scheduleInsights() {
+  clearTimeout(insightsTimer);
+  insightsTimer = setTimeout(loadInsights, 800);
+}
 
 async function loadInsights() {
   const body = $("insights-body");
@@ -1844,14 +1899,16 @@ function renderInsights(d) {
 // Just the tab chrome (active button + which form/list is shown), no data fetch.
 function activateTab(mode) {
   historyMode = mode;
-  $("mode-normal").classList.toggle("active", mode === "normal");
-  $("mode-lichess").classList.toggle("active", mode === "lichess");
-  $("mode-chesscom").classList.toggle("active", mode === "chesscom");
-  $("mode-paste").classList.toggle("active", mode === "paste");
+  for (const m of ["normal", "lichess", "chesscom", "paste", "puzzles"]) {
+    $(`mode-${m}`).classList.toggle("active", mode === m);
+  }
   $("lichess-form").style.display = mode === "lichess" ? "flex" : "none";
   $("chesscom-form").style.display = mode === "chesscom" ? "flex" : "none";
   $("paste-form").style.display = mode === "paste" ? "flex" : "none";
-  $("history-list").style.display = mode === "paste" ? "none" : "";
+  $("puzzles-panel").style.display = mode === "puzzles" ? "block" : "none";
+  // The Puzzles tab has its own list (theme chips), so hide the games list + insights there.
+  $("history-list").style.display = mode === "paste" || mode === "puzzles" ? "none" : "";
+  $("insights").style.display = mode === "puzzles" ? "none" : "";
 }
 
 // Update the "Set as my account" button to reflect whether `who` (lowercased) is already you.
@@ -1861,6 +1918,238 @@ function reflectSetAsMe(who) {
   const isMe = !!appUsername && appUsername.toLowerCase() === who && !!who;
   btn.disabled = isMe;
   btn.textContent = isMe ? "✓ This is your account" : "Set as my account";
+}
+
+// --- puzzle trainer ------------------------------------------------------
+// Solve your OWN mistakes: each puzzle sits you in a position you went wrong in and asks for the
+// move you missed (the engine's best, from the stored analysis — no new engine work). Themes come
+// from your recurring weaknesses (same motifs the Insights panel names), and the whole set can be
+// exported to a Lichess study of practice chapters.
+let puzzleDays = 0; // time window for themes + puzzles (0 = all history)
+
+async function loadPuzzleThemes() {
+  const wrap = $("puzzle-themes");
+  const exportBtn = $("puzzle-export");
+  if (!wrap) return;
+  wrap.innerHTML = `<span class="muted">Loading your weaknesses…</span>`;
+  let data;
+  try {
+    data = await fetch(`/api/puzzles/themes?days=${puzzleDays}`).then((r) => r.json());
+  } catch (_) {
+    wrap.innerHTML = `<span class="muted">Couldn't load puzzles.</span>`;
+    return;
+  }
+  const themes = (data && data.themes) || [];
+  const total = themes.reduce((n, t) => n + t.count, 0);
+  if (!themes.length) {
+    wrap.innerHTML = `<span class="muted">No puzzles yet — analyze some of your games first, then
+      your blunders and missed tactics become puzzles here.</span>`;
+    if (exportBtn) exportBtn.disabled = true;
+    return;
+  }
+  if (exportBtn) exportBtn.disabled = false;
+  // "All" chip first (train everything), then one chip per weakness, most common first.
+  const chips = [{ motif: "", label: "All weaknesses", count: total }].concat(themes);
+  wrap.innerHTML = chips
+    .map(
+      (t) =>
+        `<button type="button" class="puzzle-chip" data-motif="${escapeHtml(t.motif)}">` +
+        `${escapeHtml(t.label)} <span class="chip-n">${t.count}</span></button>`
+    )
+    .join("");
+  wrap.querySelectorAll(".puzzle-chip").forEach((btn) => {
+    btn.addEventListener("click", () => startPuzzles(btn.dataset.motif || ""));
+  });
+}
+
+async function startPuzzles(motif) {
+  $("history-status").textContent = "Loading puzzles…";
+  const q = new URLSearchParams({ days: String(puzzleDays), limit: "60" });
+  if (motif) q.set("motif", motif);
+  let data;
+  try {
+    data = await fetch("/api/puzzles?" + q.toString()).then((r) => r.json());
+  } catch (_) {
+    $("history-status").textContent = "Couldn't load puzzles.";
+    return;
+  }
+  const list = (data && data.puzzles) || [];
+  if (!list.length) {
+    $("history-status").textContent = "No puzzles for that theme yet.";
+    return;
+  }
+  puzzle = { list, idx: 0, motif, tries: 0, revealed: false, solved: false };
+  closeHistoryDrawer(); // get the panel out of the way of the board on small screens
+  $("history-status").textContent = "";
+  showPuzzle(0);
+}
+
+// Reset per-puzzle state and paint the board for puzzle `i` (side to move = the solver).
+function showPuzzle(i) {
+  if (!puzzle) return;
+  puzzle.idx = clamp(i, 0, puzzle.list.length - 1);
+  puzzle.tries = 0;
+  puzzle.revealed = false;
+  puzzle.solved = false;
+  // Leave any game-review mode: the board is a puzzle now, not a timeline.
+  analyzing = false;
+  exploring = false;
+  evalShapes = [];
+  searchGen += 1; // cancel any in-flight arrow search from the previous position
+  bestArrows = [];
+  threatArrows = [];
+  playedWasBest = false;
+  paintPuzzleBoard();
+  renderPuzzlePanel();
+}
+
+// (Re)draw the current puzzle position with only the side-to-move movable — used on load and to
+// snap the board back after a wrong guess.
+function paintPuzzleBoard() {
+  const p = puzzle.list[puzzle.idx];
+  chess.load(p.fen);
+  orient = p.color;
+  applyEvalBarTheme();
+  setEvalBar(null);
+  ground.set({
+    fen: p.fen,
+    orientation: orient,
+    turnColor: p.color,
+    check: chess.inCheck(),
+    movable: { color: puzzle.solved || puzzle.revealed ? undefined : p.color, dests: computeDests(), free: false, showDests: true },
+    lastMove: undefined,
+  });
+  ground.setAutoShapes([]);
+  const toMove = p.color === "white" ? "White" : "Black";
+  const opp = (p.color === "white" ? p.black : p.white) || "?";
+  $("game-meta").textContent = `Puzzle ${puzzle.idx + 1} of ${puzzle.list.length} — from your game vs ${opp}`;
+  const glyph = { blunder: "🔴", mistake: "🟠", inaccuracy: "🟡" }[p.classification] || "";
+  $("status").className = "status";
+  $("status").innerHTML = `${glyph} <b>${toMove} to move</b> — find the move you missed.`;
+}
+
+function onPuzzleMove(orig, dest) {
+  const p = puzzle.list[puzzle.idx];
+  const promo = isPromotion(orig, dest) ? "q" : undefined;
+  const uci = orig + dest + (promo ?? "");
+  if (uci === p.solution_uci) {
+    chess.move({ from: orig, to: dest, promotion: promo });
+    puzzle.solved = true;
+    ground.set({
+      fen: chess.fen(),
+      turnColor: turnColor(),
+      check: chess.inCheck(),
+      movable: { color: undefined, dests: new Map() },
+    });
+    ground.setAutoShapes([{ orig, dest, brush: "green" }]);
+    const extra = puzzle.tries === 0 ? "first try!" : `after ${puzzle.tries + 1} tries.`;
+    $("status").innerHTML = `✅ <b>Correct</b> — ${escapeHtml(p.solution_san)}, ${extra}`;
+    renderPuzzlePanel();
+    return;
+  }
+  // Wrong: flash a red arrow on the attempt, snap the board back, and let them try again.
+  puzzle.tries += 1;
+  const wasPlayed = uci === p.played_uci ? " — that's the move you played in the game" : "";
+  $("status").innerHTML = `❌ Not the best${wasPlayed}. Try again${puzzle.tries >= 2 ? ", or Reveal." : "."}`;
+  paintPuzzleBoard();
+  ground.setAutoShapes([{ orig, dest, brush: "red" }]);
+  renderPuzzlePanel();
+}
+
+function revealPuzzle() {
+  if (!puzzle) return;
+  const p = puzzle.list[puzzle.idx];
+  puzzle.revealed = true;
+  paintPuzzleBoard();
+  // Apply the solution so its arrow + resulting position show (chess.js wants from/to, not UCI).
+  const mv = chess.move({
+    from: p.solution_uci.slice(0, 2),
+    to: p.solution_uci.slice(2, 4),
+    promotion: p.solution_uci[4],
+  });
+  ground.set({ fen: chess.fen(), turnColor: turnColor(), check: chess.inCheck(), movable: { color: undefined, dests: new Map() } });
+  ground.setAutoShapes([{ orig: p.solution_uci.slice(0, 2), dest: p.solution_uci.slice(2, 4), brush: "green" }]);
+  $("status").innerHTML = `💡 Best was <b>${escapeHtml((mv && mv.san) || p.solution_san)}</b>.`;
+  renderPuzzlePanel();
+}
+
+function nextPuzzle() {
+  if (!puzzle) return;
+  if (puzzle.idx + 1 >= puzzle.list.length) {
+    $("status").innerHTML = `🎉 That's all ${puzzle.list.length} puzzles in this set. Nice work.`;
+    puzzle.finished = true;
+    renderPuzzlePanel();
+    return;
+  }
+  showPuzzle(puzzle.idx + 1);
+}
+
+// The puzzle control row under the board (Reveal / Skip / Next) + open-game context link.
+function renderPuzzlePanel() {
+  const bar = $("puzzle-controls");
+  if (!bar) return;
+  if (!puzzle) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const p = puzzle.list[puzzle.idx];
+  const done = puzzle.solved || puzzle.revealed;
+  const gameLink = p.game_url
+    ? `<a href="${escapeHtml(p.game_url)}" target="_blank" rel="noopener" class="linklike">see the full game ↗</a>`
+    : "";
+  bar.innerHTML =
+    `<button type="button" id="pz-reveal" ${done ? "disabled" : ""}>💡 Reveal</button>` +
+    `<button type="button" id="pz-next">${done ? "Next ▶" : "Skip ▶"}</button>` +
+    `<button type="button" id="pz-exit" class="linklike">Exit puzzles</button>` +
+    (done ? `<span class="pz-context">${gameLink}</span>` : "");
+  $("pz-reveal").onclick = revealPuzzle;
+  $("pz-next").onclick = nextPuzzle;
+  $("pz-exit").onclick = exitPuzzleMode;
+}
+
+function exitPuzzleMode() {
+  puzzle = null;
+  $("puzzle-controls").hidden = true;
+  // Restore whatever game was on the board before (if any), else a neutral message.
+  if (timeline.length) {
+    gotoNode(clamp(cur, 0, timeline.length - 1));
+  } else {
+    $("status").textContent = "";
+    $("game-meta").textContent = "Pick a game from the Games panel, or paste a PGN.";
+  }
+}
+
+// Export the current puzzle selection to a Lichess study (needs a study:write token). `motif` is
+// the active theme filter (blank = all), matched to what the trainer is currently showing.
+async function exportPuzzlesToStudy() {
+  const btn = $("puzzle-export");
+  const status = $("puzzle-export-status");
+  const motif = (puzzle && puzzle.motif) || "";
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Creating study…";
+  if (status) status.textContent = "";
+  let res = {};
+  try {
+    res = await fetch("/api/puzzles/lichess-study", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ motif, days: puzzleDays, limit: 60 }),
+    }).then((r) => r.json());
+  } catch (_) {
+    res = { error: "Couldn't reach the server." };
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  if (res && res.study_url) {
+    if (status)
+      status.innerHTML =
+        `✅ Created a study with ${res.chapters} chapter${res.chapters === 1 ? "" : "s"} — ` +
+        `<a href="${escapeHtml(res.study_url)}" target="_blank" rel="noopener">open it on Lichess ↗</a>`;
+  } else if (status) {
+    status.textContent = (res && res.error) || "Couldn't create the study.";
+  }
 }
 
 // --- settings panel ------------------------------------------------------
@@ -2092,12 +2381,12 @@ function setMode(mode) {
   activateTab(mode);
   if (mode === "normal") {
     loadHistory();
-  } else if (mode === "lichess") {
-    lichessCount = LICHESS_PAGE; // fresh search starts at the first page
-    loadLichess($("lichess-user").value.trim());
-  } else if (mode === "chesscom") {
-    chesscomCount = LICHESS_PAGE;
-    loadChesscom($("chesscom-user").value.trim());
+  } else if (mode === "lichess" || mode === "chesscom") {
+    remoteCount[mode] = LICHESS_PAGE; // fresh search starts at the first page
+    loadRemote(mode, $(`${mode}-user`).value.trim());
+  } else if (mode === "puzzles") {
+    $("history-status").textContent = "";
+    loadPuzzleThemes();
   } else {
     // paste: nothing to fetch; just a hint until they submit.
     updatePasteHint();
@@ -2362,11 +2651,12 @@ function init() {
     events: { move: onUserMove },
     drawable: { enabled: true },
   });
-  // Add a neutral grey brush for the "move you played" arrow (it marks what you did, not a
-  // judgement, so grey reads more intuitively than blue). Keeps all default brushes intact.
+  // Add a neutral dark brush for the "move you played" arrow (it marks what you did, not a
+  // judgement, so a dark neutral reads more intuitively than a coloured verdict). Keeps all
+  // default brushes intact.
   ground.state.drawable.brushes.grey = {
     key: "grey",
-    color: "#7c7c7c",
+    color: "#4a4a4a",
     opacity: 0.9,
     lineWidth: 10,
   };
@@ -2385,11 +2675,11 @@ function init() {
   $("reset").addEventListener("click", returnToReview);
   $("flip-review").addEventListener("click", reviewOtherSide);
   $("best-toggle").addEventListener("change", (e) => {
-    bestArrowOn = e.target.checked;
+    bestArrowOn = bestArrowWanted = e.target.checked;
     refreshBestMoves(); // starts the live search when on, clears arrows when off
   });
   $("threat-toggle").addEventListener("change", (e) => {
-    threatArrowOn = e.target.checked;
+    threatArrowOn = threatArrowWanted = e.target.checked;
     refreshBestMoves();
   });
   $("graph").addEventListener("click", onGraphClick);
@@ -2404,6 +2694,13 @@ function init() {
   $("mode-lichess").addEventListener("click", () => setMode("lichess"));
   $("mode-chesscom").addEventListener("click", () => setMode("chesscom"));
   $("mode-paste").addEventListener("click", () => setMode("paste"));
+  $("mode-puzzles").addEventListener("click", () => setMode("puzzles"));
+  // Puzzle trainer: time window + Lichess-study export live in the Puzzles tab panel.
+  $("puzzle-days").addEventListener("change", (e) => {
+    puzzleDays = Number(e.target.value) || 0;
+    loadPuzzleThemes();
+  });
+  $("puzzle-export").addEventListener("click", exportPuzzlesToStudy);
   // Paste-PGN: analyze any PGN (e.g. Chess.com), single or multi-game, without the Lichess fetch.
   $("paste-upload").addEventListener("click", () => $("paste-file").click());
   $("paste-file").addEventListener("change", (e) => {
@@ -2422,16 +2719,13 @@ function init() {
     }
     startPasteAnalysis(pgn, $("paste-side").value || "auto", ($("paste-username").value || "").trim());
   });
-  $("lichess-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    lichessCount = LICHESS_PAGE; // a new lookup starts fresh
-    loadLichess($("lichess-user").value.trim());
-  });
-  $("chesscom-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    chesscomCount = LICHESS_PAGE;
-    loadChesscom($("chesscom-user").value.trim());
-  });
+  for (const provider of ["lichess", "chesscom"]) {
+    $(`${provider}-form`).addEventListener("submit", (e) => {
+      e.preventDefault();
+      remoteCount[provider] = LICHESS_PAGE; // a new lookup starts fresh
+      loadRemote(provider, $(`${provider}-user`).value.trim());
+    });
+  }
   // Manual "Sync new games": fetch + analyze anything history hasn't seen for the configured user.
   $("chesscom-sync").addEventListener("click", () => {
     if (!chesscomUsername) {
@@ -2442,7 +2736,7 @@ function init() {
   });
   // "Set as my account": make the looked-up Lichess handle your unified identity.
   $("set-as-me").addEventListener("click", async () => {
-    const u = ($("lichess-user").value.trim() || lichessUser || "").trim();
+    const u = ($("lichess-user").value.trim() || remoteUser.lichess || "").trim();
     if (!u) return;
     await saveUsername(u);
     reflectSetAsMe((u || "").toLowerCase());
@@ -2462,6 +2756,7 @@ function init() {
   // Insights panel: re-aggregate when the time period changes.
   $("insights-period").addEventListener("change", (e) => {
     insightsDays = Number(e.target.value) || 0;
+    $("insights-body").innerHTML = `<p class="muted">Loading…</p>`;
     loadInsights();
   });
   // Settings panel.
@@ -2484,6 +2779,17 @@ function init() {
       return;
     }
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if (puzzle) {
+      // Puzzle mode: → / space / n advance, Escape exits; game-review navigation is suspended.
+      if (e.key === "ArrowRight" || e.key === " " || e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        nextPuzzle();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        exitPuzzleMode();
+      }
+      return;
+    }
     if (e.key === "ArrowLeft") {
       e.preventDefault();
       stepBack();

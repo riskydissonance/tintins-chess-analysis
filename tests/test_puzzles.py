@@ -1,0 +1,268 @@
+"""Tests for the puzzle trainer (puzzles.py) and the Lichess study export PGN."""
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+from server import config
+from server.core import lichess_study
+from server.core import puzzles
+
+# A real middlegame position (white to move) so SAN conversion is exercised on legal moves.
+_FEN_W = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+# Black to move.
+_FEN_B = "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/5N2/PPPPBPPP/RNBQK2R b KQkq - 3 3"
+
+
+def _mistake(
+    fen: str = _FEN_W,
+    played: str = "d2d3",
+    best: str = "e1g1",
+    best_san: str | None = "O-O",
+    classification: str = "blunder",
+    win_drop: float = 25.0,
+    motifs: list[str] | None = None,
+    ply: int = 7,
+) -> dict:
+    return {
+        "ply": ply,
+        "move_number": (ply + 1) // 2,
+        "color": "white",
+        "san": "d3",
+        "uci": played,
+        "best_san": best_san,
+        "best_uci": best,
+        "classification": classification,
+        "win_before": 60.0,
+        "win_after": 60.0 - win_drop,
+        "win_drop": win_drop,
+        "phase": "middlegame",
+        "fen_before": fen,
+        "motifs": motifs or [],
+    }
+
+
+def _rec(game_id: str, mistakes: list[dict], *, date: str = "2026-01-15") -> dict:
+    return {
+        "schema_version": 1,
+        "game_id": game_id,
+        "reviewed_side": "white",
+        "analyzed_at": "2026-01-15T00:00:00Z",
+        "player_id": "alice",
+        "platform": "lichess",
+        "player_name": "alice",
+        "date": date,
+        "white": "alice",
+        "black": "bob",
+        "result": "1-0",
+        "player_result": "win",
+        "opening": "Italian Game",
+        "speed": "blitz",
+        "accuracy": 80.0,
+        "game_url": f"https://lichess.org/{game_id}",
+        "counts": {"inaccuracy": 0, "mistake": 0, "blunder": len(mistakes)},
+        "phase_loss": {"opening": 0.0, "middlegame": 20.0, "endgame": 0.0},
+        "mistakes": mistakes,
+    }
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "USERNAME", "alice")
+    monkeypatch.setattr(config, "USERNAME_ALIASES", [])
+    (tmp_path / "history").mkdir()
+    return str(tmp_path)
+
+
+def _write(records: list[dict], data_dir: str) -> None:
+    with open(os.path.join(data_dir, "history", "games.jsonl"), "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+
+
+def test_build_puzzles_basic(data_dir):
+    _write([_rec("g1", [_mistake(motifs=["hung_piece"])])], data_dir)
+    out = puzzles.build_puzzles(data_dir=data_dir)
+    assert len(out) == 1
+    p = out[0]
+    assert p["fen"] == _FEN_W
+    assert p["solution_uci"] == "e1g1"
+    assert p["solution_san"] == "O-O"
+    assert p["color"] == "white"  # solver = side to move = the side that blundered
+    assert p["themes"] == ["hanging pieces (leaving a piece en prise)"]
+    assert p["game_url"] == "https://lichess.org/g1"
+
+
+def test_puzzles_sorted_blunders_first_then_win_drop(data_dir):
+    _write(
+        [
+            _rec(
+                "g1",
+                [
+                    _mistake(classification="inaccuracy", win_drop=6.0, ply=1),
+                    _mistake(classification="blunder", win_drop=20.0, ply=3),
+                    _mistake(classification="blunder", win_drop=45.0, ply=5),
+                    _mistake(classification="mistake", win_drop=12.0, ply=7),
+                ],
+            )
+        ],
+        data_dir,
+    )
+    out = puzzles.build_puzzles(data_dir=data_dir)
+    assert [(p["classification"], p["win_drop"]) for p in out] == [
+        ("blunder", 45.0),
+        ("blunder", 20.0),
+        ("mistake", 12.0),
+        ("inaccuracy", 6.0),
+    ]
+
+
+def test_filters_motif_kinds_and_limit(data_dir):
+    _write(
+        [
+            _rec(
+                "g1",
+                [
+                    _mistake(motifs=["hung_piece"], classification="blunder", ply=1),
+                    _mistake(motifs=["missed_fork"], classification="mistake", ply=3),
+                    _mistake(motifs=["hung_piece"], classification="inaccuracy", ply=5),
+                ],
+            )
+        ],
+        data_dir,
+    )
+    assert len(puzzles.build_puzzles(motif="hung_piece", data_dir=data_dir)) == 2
+    assert len(puzzles.build_puzzles(kinds=["blunder"], data_dir=data_dir)) == 1
+    assert len(puzzles.build_puzzles(limit=1, data_dir=data_dir)) == 1
+    assert puzzles.build_puzzles(motif="back_rank", data_dir=data_dir) == []
+
+
+def test_unsolvable_mistakes_are_skipped(data_dir):
+    _write(
+        [
+            _rec(
+                "g1",
+                [
+                    _mistake(best="", ply=1),  # no better move recorded
+                    _mistake(best="d2d3", played="d2d3", ply=3),  # solution == played
+                    _mistake(fen="", ply=5),  # no position
+                    # illegal stored solution AND no stored SAN -> skipped, not served broken
+                    _mistake(best="a1a8", best_san=None, ply=7),
+                ],
+            )
+        ],
+        data_dir,
+    )
+    assert puzzles.build_puzzles(data_dir=data_dir) == []
+
+
+def test_themes_counts_match_solvable_puzzles(data_dir):
+    _write(
+        [
+            _rec(
+                "g1",
+                [
+                    _mistake(motifs=["hung_piece", "missed_fork"], ply=1),
+                    _mistake(motifs=["hung_piece"], ply=3),
+                    _mistake(motifs=["hung_piece"], best="", ply=5),  # unsolvable: not counted
+                ],
+            )
+        ],
+        data_dir,
+    )
+    out = puzzles.themes(data_dir=data_dir)
+    assert out[0] == {
+        "motif": "hung_piece",
+        "label": "hanging pieces (leaving a piece en prise)",
+        "count": 2,
+    }
+    assert {t["motif"]: t["count"] for t in out} == {"hung_piece": 2, "missed_fork": 1}
+
+
+def test_black_to_move_puzzle_color(data_dir):
+    _write([_rec("g1", [_mistake(fen=_FEN_B, played="d7d6", best="f6e4", best_san="Nxe4")])], data_dir)
+    (p,) = puzzles.build_puzzles(data_dir=data_dir)
+    assert p["color"] == "black"
+
+
+# --- Lichess study chapter PGN -----------------------------------------------------------------
+def test_puzzle_pgn_solution_mainline_played_variation(data_dir):
+    _write([_rec("g1", [_mistake(motifs=["hung_piece"])])], data_dir)
+    (p,) = puzzles.build_puzzles(data_dir=data_dir)
+    pgn = lichess_study.puzzle_pgn(p)
+    assert '[FEN "%s"]' % _FEN_W in pgn
+    assert '[SetUp "1"]' in pgn
+    assert "O-O $3" in pgn  # solution is the mainline, tagged "!!"
+    assert "( 4. d3 $4" in pgn  # the played move is a "??" sideline
+    assert "Find the move you missed" in pgn
+    assert '[White "alice"]' in pgn and '[Black "bob"]' in pgn
+
+
+def test_create_study_requires_token(monkeypatch):
+    monkeypatch.setattr(config, "LICHESS_TOKEN", "")
+    with pytest.raises(lichess_study.StudyError, match="study:write"):
+        lichess_study.create_study("My study", [{"fen": _FEN_W, "solution_uci": "e1g1"}])
+
+
+def test_create_study_posts_and_groups_by_orientation(monkeypatch, data_dir):
+    _write(
+        [
+            _rec(
+                "g1",
+                [
+                    _mistake(ply=1),  # white to move
+                    _mistake(fen=_FEN_B, played="d7d6", best="f6e4", best_san="Nxe4", ply=2),
+                ],
+            )
+        ],
+        data_dir,
+    )
+    items = puzzles.build_puzzles(data_dir=data_dir)
+    monkeypatch.setattr(config, "LICHESS_TOKEN", "tok")
+
+    calls = []
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"id": "abc123XY"}
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        calls.append((url, data))
+        return _Resp()
+
+    monkeypatch.setattr(lichess_study.httpx, "post", fake_post)
+    out = lichess_study.create_study("My blunders", items)
+
+    assert out == {
+        "study_id": "abc123XY",
+        "study_url": f"{config.LICHESS_API_BASE}/study/abc123XY",
+        "chapters": 2,
+    }
+    assert calls[0][0].endswith("/api/study")
+    assert calls[0][1]["name"] == "My blunders"
+    assert calls[0][1]["visibility"] == "private"
+    # One import per orientation present, in practice mode.
+    imports = [c for c in calls[1:]]
+    assert all(u.endswith("/api/study/abc123XY/import-pgn") for u, _ in imports)
+    assert sorted(d["orientation"] for _, d in imports) == ["black", "white"]
+    assert all(d["mode"] == "practice" for _, d in imports)
+
+
+def test_create_study_bad_token_maps_to_friendly_error(monkeypatch):
+    monkeypatch.setattr(config, "LICHESS_TOKEN", "tok")
+
+    class _Resp:
+        status_code = 401
+        text = "unauthorized"
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(lichess_study.httpx, "post", lambda *a, **k: _Resp())
+    with pytest.raises(lichess_study.StudyError, match="study:write"):
+        lichess_study.create_study("x", [{"fen": _FEN_W, "solution_uci": "e1g1", "color": "white"}])
