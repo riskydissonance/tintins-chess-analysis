@@ -242,9 +242,21 @@ input:focus, textarea:focus, select:focus {
 
 .view { display: none; }
 .view.active { display: block; }
-#view-review.active { display: flex; gap: 24px; padding: 18px 22px; align-items: flex-start; }
 
-/* Pages (Games / Puzzles / Insights): a centred readable column. */
+/* Board views (Review / Puzzles): board left, panel right, the whole pair centred in the shell —
+   on an ultrawide the content sits in the middle, not hugging the rail. */
+.duo {
+  display: flex;
+  gap: 24px;
+  padding: 18px 22px;
+  align-items: flex-start;
+  justify-content: center;
+  max-width: 1560px;
+  margin: 0 auto;
+}
+.board-slot { display: contents; } /* re-parent target for the shared board column */
+
+/* Pages (Insights / Settings): a centred readable column. */
 .page { max-width: 640px; margin: 0 auto; padding: 32px 24px 48px; }
 .page.wide { max-width: 760px; }
 .page-head { margin-bottom: 20px; }
@@ -304,13 +316,17 @@ input:focus, textarea:focus, select:focus {
   transition: height 0.25s ease;
 }
 
-/* Drag handle between board and analysis columns (position driven by --col-width). */
+/* Drag handle between board and side columns — an in-flow flex child, so it stays put when the
+   centred row shifts on resize. */
 .col-resizer {
-  position: fixed;
+  flex: none;
+  align-self: stretch;
+  position: sticky;
   top: 0;
-  left: calc(var(--rail-w) + 22px + var(--col-width) + 6px);
-  height: 100vh;
+  min-height: 70vh;
+  max-height: 100vh;
   width: 14px;
+  margin: 0 -5px; /* visually tight; the hit target stays 14px */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -491,18 +507,22 @@ input:focus, textarea:focus, select:focus {
 .sb-counts .chip.mistake { background: var(--mistake); }
 .sb-counts .chip.inaccuracy { background: var(--inaccuracy); }
 
-/* Analysis side column: a stack of cards. */
+/* Side column (games list / analysis / puzzle filters): a stack of cards beside the board. */
 .side-col {
-  flex: 0 1 400px;
-  width: 400px;
+  flex: 0 1 420px;
+  width: 420px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding-top: 6px;
 }
-body.focus-mode .side-col { display: none; } /* drills: the column describes a stale game */
-body.focus-mode .col-resizer { display: none; }
+.side-head h1 { font-size: var(--fs-4); margin-bottom: 4px; }
+.side-head p { margin: 0; line-height: 1.5; }
+.games-hint { margin: 0 0 4px; line-height: 1.5; }
+/* The two Review panes are stacks themselves, and [hidden] must beat display:flex. */
+#games-pane, #review-pane { display: flex; flex-direction: column; gap: 14px; }
+#games-pane[hidden], #review-pane[hidden] { display: none; }
 
 /* Engine-grounded comment for the selected move. */
 .comment {
@@ -954,7 +974,16 @@ body.focus-mode .col-resizer { display: none; }
 .firstrun-card h2 { margin: 0; font-size: var(--fs-4); }
 .firstrun-card p { margin: 0; font-size: var(--fs-1); }
 
-.settings-card { width: min(460px, 92vw); max-height: 88vh; overflow-y: auto; gap: 15px; }
+/* Settings form: its own view now (a centred page), not a modal. */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: 24px 26px;
+}
 .set-field { display: flex; flex-direction: column; gap: 5px; }
 .set-label { font-size: var(--fs-1); font-weight: 600; color: var(--text); }
 .set-opt { font-weight: 400; color: var(--text-2); font-size: var(--fs-0); }
@@ -985,9 +1014,9 @@ body.focus-mode .col-resizer { display: none; }
 #settings-status:empty { display: none; }
 
 /* --- 9. Responsive ----------------------------------------------------------------------------- */
-/* Stack the review view when board + analysis no longer fit side by side. */
+/* Stack the board views when board + side panel no longer fit side by side. */
 @media (max-width: 1000px) {
-  #view-review.active { flex-direction: column; }
+  .duo { flex-direction: column; align-items: stretch; }
   .board-col {
     position: static;
     max-height: none;
@@ -1005,5 +1034,5 @@ body.focus-mode .col-resizer { display: none; }
   .rail-label { display: none; }
   .rail-btn { width: 38px; padding: 9px 2px; }
   .page { padding: 20px 14px 40px; }
-  #view-review.active { padding: 12px; }
+  .duo { padding: 12px; }
 }

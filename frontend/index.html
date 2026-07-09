@@ -18,14 +18,13 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <!-- ===== App shell: a slim icon rail (primary navigation) + one view at a time ========== -->
+    <!-- ===== App shell: a slim icon rail (primary navigation) + one view at a time ==========
+         The board column (.board-col) is a single shared element: JS re-parents it into the
+         active view's board slot (Review or Puzzles), so there is only ever one Chessground. -->
     <nav id="rail" aria-label="Primary">
       <div class="rail-brand" title="Kibitz">♞</div>
-      <button id="rail-review" class="rail-btn active" title="Review — the board (r)" aria-label="Review">
+      <button id="rail-review" class="rail-btn active" title="Review — board + your games (r)" aria-label="Review">
         <span class="rail-ico">▦</span><span class="rail-label">Review</span>
-      </button>
-      <button id="rail-games" class="rail-btn" title="Games — open or import a game (g)" aria-label="Games">
-        <span class="rail-ico">♟</span><span class="rail-label">Games</span>
       </button>
       <button id="rail-puzzles" class="rail-btn" title="Puzzles — drill your own mistakes" aria-label="Puzzles">
         <span class="rail-ico">✦</span><span class="rail-label">Puzzles</span>
@@ -44,9 +43,10 @@
           <span><kbd>f</kbd> flip board</span>
           <span><kbd>l</kbd> toggle best move</span>
           <span><kbd>t</kbd> toggle threat arrows</span>
+          <span><kbd>r</kbd> / <kbd>g</kbd> review / games list</span>
         </span>
       </span>
-      <button id="settings-toggle" class="rail-btn" title="Settings" aria-label="Settings">
+      <button id="rail-settings" class="rail-btn" title="Settings" aria-label="Settings">
         <span class="rail-ico">⚙</span><span class="rail-label">Settings</span>
       </button>
     </nav>
@@ -64,184 +64,196 @@
         <div id="offline-banner" class="setup-banner" hidden></div>
       </div>
 
-      <!-- ===== Review: the board + analysis workspace ======================================= -->
+      <!-- ===== Review: board on the left, games list / analysis on the right ================= -->
       <main id="view-review" class="view active">
-        <section class="board-col">
-          <div id="game-meta" class="muted">Loading…</div>
-          <div id="scoreboard" class="scoreboard" hidden></div>
-          <div class="board-wrap">
-            <div id="evalbar"><div id="evalbar-fill"></div></div>
-            <div id="board" class="cg-wrap"></div>
+        <div class="duo">
+          <div id="review-board-slot" class="board-slot">
+            <section class="board-col">
+              <div id="game-meta" class="muted">Loading…</div>
+              <div id="scoreboard" class="scoreboard" hidden></div>
+              <div class="board-wrap">
+                <div id="evalbar"><div id="evalbar-fill"></div></div>
+                <div id="board" class="cg-wrap"></div>
+              </div>
+
+              <div id="graph-wrap">
+                <svg id="graph" preserveAspectRatio="none"></svg>
+                <div id="analysis-progress" hidden>
+                  <div id="analysis-progress-label">Analyzing…</div>
+                  <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
+                </div>
+              </div>
+
+              <div class="controls" id="game-controls">
+                <div class="ctrl-group">
+                  <button id="back" class="btn" title="Back one move (←)">◀</button>
+                  <button id="fwd" class="btn" title="Forward one move (→ or Space)">▶</button>
+                </div>
+                <div class="ctrl-group">
+                  <button id="prev-mistake" class="btn" title="Previous mistake (p)">‹ Mistake</button>
+                  <button id="next-mistake" class="btn" title="Next mistake (n)">Mistake ›</button>
+                  <button id="reset" class="btn" title="Snap back to the move under review">↩ Review move</button>
+                </div>
+                <label class="toggle" title="Toggle best-move arrows (l) — green = what should have been played instead of the dark played-move arrow (all green: the played move WAS best)">
+                  <input type="checkbox" id="best-toggle" checked /> Best move
+                </label>
+                <label class="toggle" title="Toggle threat arrows (t) — what the side that just moved is threatening, in yellow">
+                  <input type="checkbox" id="threat-toggle" checked /> Threats
+                </label>
+                <button id="flip-review" type="button" class="btn" hidden
+                  title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Other side</button>
+              </div>
+
+              <!-- Puzzle-mode controls (Reveal / Next / Exit): swapped in for #game-controls while
+                   a drill is active, so they sit in the same spot the nav buttons occupy. -->
+              <div id="puzzle-controls" class="controls puzzle-controls" hidden></div>
+              <div id="status" class="status"></div>
+            </section>
           </div>
 
-          <div id="graph-wrap">
-            <svg id="graph" preserveAspectRatio="none"></svg>
-            <div id="analysis-progress" hidden>
-              <div id="analysis-progress-label">Analyzing…</div>
-              <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
-            </div>
+          <!-- Drag left/right to resize the board; double-click to reset. -->
+          <div id="col-resizer" class="col-resizer" role="separator" aria-orientation="vertical"
+            aria-label="Resize board — drag, or double-click to reset" tabindex="0"
+            title="Drag to resize the board · double-click to reset">
+            <div class="grip"><span></span><span></span><span></span></div>
           </div>
 
-          <div class="controls" id="game-controls">
-            <div class="ctrl-group">
-              <button id="back" class="btn" title="Back one move (←)">◀</button>
-              <button id="fwd" class="btn" title="Forward one move (→ or Space)">▶</button>
+          <aside class="side-col">
+            <!-- The right panel is either the games list or the analysis of the open game. -->
+            <div class="seg" id="side-tabs" role="tablist">
+              <button id="side-games" class="active" type="button">Games</button>
+              <button id="side-review" type="button">Analysis</button>
             </div>
-            <div class="ctrl-group">
-              <button id="prev-mistake" class="btn" title="Previous mistake (p)">‹ Mistake</button>
-              <button id="next-mistake" class="btn" title="Next mistake (n)">Mistake ›</button>
-              <button id="reset" class="btn" title="Snap back to the move under review">↩ Review move</button>
+
+            <div id="games-pane">
+              <div id="history-col">
+                <p class="muted games-hint">Open a past review, fetch games by username, or import
+                  any PGN. You can also drop a <code>.pgn</code> file anywhere on this page.</p>
+                <div class="seg" id="games-sources" role="tablist">
+                  <button id="mode-normal" class="active" type="button">My games</button>
+                  <button id="mode-lichess" type="button">Lichess</button>
+                  <button id="mode-chesscom" type="button">Chess.com</button>
+                  <button id="mode-paste" type="button">Paste PGN</button>
+                </div>
+                <form id="lichess-form" class="lichess-form" style="display:none">
+                  <div class="lichess-row">
+                    <input id="lichess-user" type="text" autocomplete="off" placeholder="lichess username" />
+                    <button type="submit" class="btn">Load</button>
+                  </div>
+                  <button type="button" id="set-as-me" class="linklike set-as-me"
+                    title="Make this your account: used for 'My games', your profile, and auto-open on launch">
+                    Set as my account
+                  </button>
+                </form>
+                <form id="chesscom-form" class="lichess-form" style="display:none">
+                  <div class="lichess-row">
+                    <input id="chesscom-user" type="text" autocomplete="off" placeholder="chess.com username" />
+                    <button type="submit" class="btn">Load</button>
+                  </div>
+                  <button type="button" id="chesscom-sync" class="linklike set-as-me"
+                    title="Fetch your newest chess.com games and analyze the ones not seen before">
+                    ⟳ Sync new games
+                  </button>
+                </form>
+                <form id="paste-form" class="paste-form" style="display:none">
+                  <textarea id="paste-pgn" rows="8" autocomplete="off" spellcheck="false"
+                    placeholder="Paste a PGN here (one or many games — e.g. Chess.com → Download games), use Upload .pgn, or drag a .pgn file onto this page"></textarea>
+                  <input id="paste-file" type="file" accept=".pgn,.txt" hidden />
+                  <div class="paste-row">
+                    <button type="button" id="paste-upload" class="btn" title="Load a .pgn file (one or many games)">Upload .pgn</button>
+                    <label class="paste-side">You played
+                      <select id="paste-side">
+                        <option value="auto">auto</option>
+                        <option value="white">White</option>
+                        <option value="black">Black</option>
+                      </select>
+                    </label>
+                    <button type="submit" class="btn primary">Analyze</button>
+                  </div>
+                  <input id="paste-username" type="text" autocomplete="off"
+                    placeholder="your username (optional — for multi-game files)" />
+                </form>
+                <div id="history-status" class="hist-status"></div>
+                <ol id="history-list" class="history"></ol>
+              </div>
             </div>
-            <label class="toggle" title="Toggle best-move arrows (l) — green = what should have been played instead of the dark played-move arrow (all green: the played move WAS best)">
-              <input type="checkbox" id="best-toggle" checked /> Best move
-            </label>
-            <label class="toggle" title="Toggle threat arrows (t) — what the side that just moved is threatening, in yellow">
-              <input type="checkbox" id="threat-toggle" checked /> Threats
-            </label>
-            <button id="flip-review" type="button" class="btn" hidden
-              title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Other side</button>
-          </div>
 
-          <!-- Puzzle-mode controls (Reveal / Next / Exit): swapped in for #game-controls while a
-               drill is active, so they sit in the same spot the nav buttons normally occupy. -->
-          <div id="puzzle-controls" class="controls puzzle-controls" hidden></div>
-          <div id="status" class="status"></div>
-        </section>
-
-        <!-- Drag left/right to resize the board; double-click to reset. position:fixed in CSS. -->
-        <div id="col-resizer" class="col-resizer" role="separator" aria-orientation="vertical"
-          aria-label="Resize board — drag, or double-click to reset" tabindex="0"
-          title="Drag to resize the board · double-click to reset">
-          <div class="grip"><span></span><span></span><span></span></div>
+            <div id="review-pane" hidden>
+              <div id="coach" class="card coach" hidden></div>
+              <div id="comment" class="comment"></div>
+              <div id="verdict" class="verdict"></div>
+              <div class="coach-ai-wrap">
+                <button id="coach-ai-btn" class="btn coach-ai-btn" hidden
+                  title="Have Kibitz write a fuller coaching summary of this game (uses your Claude subscription)">
+                  ✨ AI coach summary
+                </button>
+                <div id="coach-ai" class="card coach-ai" hidden></div>
+              </div>
+              <section id="movelist-panel" class="card movelist-panel">
+                <div class="card-head">
+                  <h2>Moves</h2>
+                  <button id="movelist-expand" type="button" class="linklike movelist-expand">Show all ▾</button>
+                </div>
+                <ol id="movelist" class="movelist compact"></ol>
+              </section>
+              <section class="card">
+                <div class="card-head"><h2>Mistakes</h2></div>
+                <ol id="mistakes" class="mistakes"></ol>
+              </section>
+              <section class="card chat-panel">
+                <div class="card-head"><h2>Ask Kibitz</h2></div>
+                <p class="muted chat-hint">
+                  Ask about the current position (uses your Claude subscription).
+                </p>
+                <div id="chat-messages" class="chat-messages"></div>
+                <form id="chat-form" class="chat-form">
+                  <input id="chat-input" type="text" autocomplete="off"
+                    placeholder="why is this bad? · what should I do here?" />
+                  <button type="submit" id="chat-send" aria-label="Send" title="Send">→</button>
+                </form>
+              </section>
+            </div>
+          </aside>
         </div>
-
-        <aside class="side-col">
-          <div id="coach" class="card coach" hidden></div>
-          <div id="comment" class="comment"></div>
-          <div id="verdict" class="verdict"></div>
-          <div class="coach-ai-wrap">
-            <button id="coach-ai-btn" class="btn coach-ai-btn" hidden
-              title="Have Kibitz write a fuller coaching summary of this game (uses your Claude subscription)">
-              ✨ AI coach summary
-            </button>
-            <div id="coach-ai" class="card coach-ai" hidden></div>
-          </div>
-          <section id="movelist-panel" class="card movelist-panel">
-            <div class="card-head">
-              <h2>Moves</h2>
-              <button id="movelist-expand" type="button" class="linklike movelist-expand">Show all ▾</button>
-            </div>
-            <ol id="movelist" class="movelist compact"></ol>
-          </section>
-          <section class="card">
-            <div class="card-head"><h2>Mistakes</h2></div>
-            <ol id="mistakes" class="mistakes"></ol>
-          </section>
-          <section class="card chat-panel">
-            <div class="card-head"><h2>Ask Kibitz</h2></div>
-            <p class="muted chat-hint">
-              Ask about the current position (uses your Claude subscription).
-            </p>
-            <div id="chat-messages" class="chat-messages"></div>
-            <form id="chat-form" class="chat-form">
-              <input id="chat-input" type="text" autocomplete="off"
-                placeholder="why is this bad? · what should I do here?" />
-              <button type="submit" id="chat-send" aria-label="Send" title="Send">→</button>
-            </form>
-          </section>
-        </aside>
       </main>
 
-      <!-- ===== Games: browse, sync, and import games ======================================= -->
-      <main id="view-games" class="view">
-        <div class="page" id="history-col">
-          <header class="page-head">
-            <h1>Games</h1>
-            <p class="muted">Open a past review, fetch games by username, or import any PGN.
-              You can also drop a <code>.pgn</code> file anywhere on this page.</p>
-          </header>
-          <div class="seg" id="games-sources" role="tablist">
-            <button id="mode-normal" class="active" type="button">My games</button>
-            <button id="mode-lichess" type="button">Lichess</button>
-            <button id="mode-chesscom" type="button">Chess.com</button>
-            <button id="mode-paste" type="button">Paste PGN</button>
-          </div>
-          <form id="lichess-form" class="lichess-form" style="display:none">
-            <div class="lichess-row">
-              <input id="lichess-user" type="text" autocomplete="off" placeholder="lichess username" />
-              <button type="submit" class="btn">Load</button>
-            </div>
-            <button type="button" id="set-as-me" class="linklike set-as-me"
-              title="Make this your account: used for 'My games', your profile, and auto-open on launch">
-              Set as my account
-            </button>
-          </form>
-          <form id="chesscom-form" class="lichess-form" style="display:none">
-            <div class="lichess-row">
-              <input id="chesscom-user" type="text" autocomplete="off" placeholder="chess.com username" />
-              <button type="submit" class="btn">Load</button>
-            </div>
-            <button type="button" id="chesscom-sync" class="linklike set-as-me"
-              title="Fetch your newest chess.com games and analyze the ones not seen before">
-              ⟳ Sync new games
-            </button>
-          </form>
-          <form id="paste-form" class="paste-form" style="display:none">
-            <textarea id="paste-pgn" rows="8" autocomplete="off" spellcheck="false"
-              placeholder="Paste a PGN here (one or many games — e.g. Chess.com → Download games), use Upload .pgn, or drag a .pgn file onto this page"></textarea>
-            <input id="paste-file" type="file" accept=".pgn,.txt" hidden />
-            <div class="paste-row">
-              <button type="button" id="paste-upload" class="btn" title="Load a .pgn file (one or many games)">Upload .pgn</button>
-              <label class="paste-side">You played
-                <select id="paste-side">
-                  <option value="auto">auto</option>
-                  <option value="white">White</option>
-                  <option value="black">Black</option>
-                </select>
-              </label>
-              <button type="submit" class="btn primary">Analyze</button>
-            </div>
-            <input id="paste-username" type="text" autocomplete="off"
-              placeholder="your username (optional — for multi-game files)" />
-          </form>
-          <div id="history-status" class="hist-status"></div>
-          <ol id="history-list" class="history"></ol>
-        </div>
-      </main>
-
-      <!-- ===== Puzzles: drills built from YOUR analyzed mistakes ============================ -->
+      <!-- ===== Puzzles: board on the left, drill filters on the right ======================== -->
       <main id="view-puzzles" class="view">
-        <div class="page" id="puzzles-panel">
-          <header class="page-head">
-            <h1>Puzzles</h1>
-            <p class="muted">Train the mistakes from your own games — pick a weakness to drill it.
-              Tactics and mates play out as full sequences.</p>
-          </header>
-          <div class="puzzles-filters">
-            <select id="puzzle-kinds" title="Which mistakes become puzzles"
-              aria-label="Puzzle severity filter">
-              <option value="" selected>All severities</option>
-              <option value="mistake,blunder">Mistakes + blunders</option>
-              <option value="blunder">Blunders only</option>
-            </select>
-            <select id="puzzle-days" title="Which games to build puzzles from"
-              aria-label="Puzzle time period">
-              <option value="0" selected>All time</option>
-              <option value="30">Last 30 days</option>
-              <option value="7">Last 7 days</option>
-            </select>
-          </div>
-          <div id="puzzle-themes" class="puzzle-themes"></div>
-          <section class="card puzzles-export">
-            <div class="card-head"><h2>Lichess study</h2></div>
-            <p class="muted">Turn this puzzle set into a private study of interactive practice
-              chapters on Lichess — one chapter per mistake, solution to find, your move annotated.</p>
-            <button type="button" id="puzzle-export" class="btn primary"
-              title="Needs a Lichess token with the study:write permission (⚙ Settings).">
-              ▲ Send to Lichess study
-            </button>
-            <div id="puzzle-export-status" class="muted"></div>
-          </section>
+        <div class="duo">
+          <div id="puzzle-board-slot" class="board-slot"></div>
+          <aside class="side-col" id="puzzles-panel">
+            <header class="side-head">
+              <h1>Puzzles</h1>
+              <p class="muted">Train the mistakes from your own games — pick a weakness to drill
+                it. Tactics and mates play out as full sequences.</p>
+            </header>
+            <div class="puzzles-filters">
+              <select id="puzzle-kinds" title="Which mistakes become puzzles"
+                aria-label="Puzzle severity filter">
+                <option value="" selected>All severities</option>
+                <option value="mistake,blunder">Mistakes + blunders</option>
+                <option value="blunder">Blunders only</option>
+              </select>
+              <select id="puzzle-days" title="Which games to build puzzles from"
+                aria-label="Puzzle time period">
+                <option value="0" selected>All time</option>
+                <option value="30">Last 30 days</option>
+                <option value="7">Last 7 days</option>
+              </select>
+            </div>
+            <div id="puzzles-status" class="hist-status"></div>
+            <div id="puzzle-themes" class="puzzle-themes"></div>
+            <section class="card puzzles-export">
+              <div class="card-head"><h2>Lichess study</h2></div>
+              <p class="muted">Turn this puzzle set into a private study of interactive practice
+                chapters on Lichess — one chapter per mistake, solution to find, your move annotated.</p>
+              <button type="button" id="puzzle-export" class="btn primary"
+                title="Needs a Lichess token with the study:write permission (⚙ Settings).">
+                ▲ Send to Lichess study
+              </button>
+              <div id="puzzle-export-status" class="muted"></div>
+            </section>
+          </aside>
         </div>
       </main>
 
@@ -264,6 +276,162 @@
           <div id="chart-tip" class="chart-tip" hidden></div>
         </div>
       </main>
+
+      <!-- ===== Settings: its own view (edit what used to live in .mcp.json) ================= -->
+      <main id="view-settings" class="view">
+        <div class="page" id="settings">
+          <header class="page-head"><h1>Settings</h1></header>
+          <form id="settings-form" class="settings-card">
+            <label class="set-field">
+              <span class="set-label">Lichess username <span class="set-opt">(optional)</span></span>
+              <input id="set-username" type="text" autocomplete="off" placeholder="your Lichess handle" />
+              <span class="set-hint">Lets the app auto-open your latest game, and decides which side is
+                “you”, your <b>My games</b>, and your coaching profile.</span>
+            </label>
+
+            <label class="set-field">
+              <span class="set-label">Chess.com username <span class="set-opt">(optional)</span></span>
+              <input id="set-chesscom" type="text" autocomplete="off" placeholder="ChessComUsername" />
+              <span class="set-hint">Your recent Chess.com games are recognised as yours and folded into
+                one profile. Auto-sync (below) can also analyze new ones on launch.</span>
+            </label>
+
+            <label class="set-field set-check">
+              <span class="set-check-row">
+                <input id="set-chesscom-sync" type="checkbox" />
+                <span class="set-label">Auto-sync new Chess.com games on launch</span>
+              </span>
+              <span class="set-hint">On each launch, check your most recent Chess.com games and analyze any
+                not already reviewed. Off: fetch only when you press ⟳ Sync in Games.</span>
+            </label>
+
+            <div id="chesscom-sync-max-field" class="set-field" hidden>
+              <span class="set-label">How many recent games to check</span>
+              <input id="set-chesscom-sync-max" type="number" min="1" max="50" step="1"
+                autocomplete="off" inputmode="numeric" />
+              <span class="set-hint">Already-reviewed games are skipped — if these are all analyzed
+                already, nothing new runs.</span>
+            </div>
+
+            <label class="set-field set-check">
+              <span class="set-check-row">
+                <input id="set-coach-ai-auto" type="checkbox" />
+                <span class="set-label">Auto-generate AI coach summary <span class="set-opt">(uses your Claude subscription)</span></span>
+              </span>
+              <span class="set-hint">Auto-write the fuller summary for every game, instead of pressing the
+                button under the board. The quick side-panel summary always shows.</span>
+            </label>
+
+            <label class="set-field set-check">
+              <span class="set-check-row">
+                <input id="set-personalize" type="checkbox" />
+                <span class="set-label">Personalize AI coach with my history</span>
+              </span>
+              <span class="set-hint">Include your cross-game history so Kibitz coaches you on recurring
+                patterns. Turn off to send fewer tokens.</span>
+            </label>
+
+            <label class="set-field set-check">
+              <span class="set-check-row">
+                <input id="set-skill-auto" type="checkbox" />
+                <span class="set-label">Auto-scale mistake sensitivity to each game's rating</span>
+              </span>
+              <span class="set-hint">On: reads each game's Elo from the PGN to decide how strict to be.
+                Turn off to set your own level.</span>
+            </label>
+
+            <div id="skill-manual" class="set-field" hidden>
+              <span class="set-label">Mistake sensitivity
+                <span class="set-opt" id="set-elo-label"></span></span>
+              <input id="set-elo" type="range" min="400" max="2400" step="50" value="1200" />
+              <div class="set-slider-ends"><span>More forgiving</span><span>Stricter</span></div>
+              <span class="set-hint">Higher flags subtler mistakes (and searches deeper); lower flags only
+                clearer blunders.</span>
+            </div>
+
+            <label class="set-field">
+              <span class="set-label">Coaching memory</span>
+              <select id="set-profile-mode">
+                <option value="balanced">Recent form + all-time (recommended)</option>
+                <option value="recent">Recent games only</option>
+                <option value="all">My whole history (weigh all equally)</option>
+                <option value="custom">Custom — set the windows below</option>
+              </select>
+              <span id="set-profile-hint" class="set-hint"></span>
+            </label>
+
+            <details class="set-adv">
+              <summary>Advanced</summary>
+              <label class="set-field set-check">
+                <span class="set-check-row">
+                  <input id="set-coach-ai-persist" type="checkbox" />
+                  <span class="set-label">Remember AI coach summaries between sessions</span>
+                </span>
+                <span class="set-hint">On (default): a generated Kibitz summary is saved with the game, so
+                  reopening it later shows the saved text instead of spending Claude to regenerate. Use the
+                  ⟳ on the summary to re-run it anyway. Off: summaries regenerate each time you reopen.</span>
+              </label>
+              <label class="set-field">
+                <span class="set-label">Other accounts <span class="set-opt">(optional)</span></span>
+                <input id="set-aliases" type="text" autocomplete="off" placeholder="my_other_lichess, another_handle" />
+                <span class="set-hint">Any additional handles that are also you (comma-separated) — they
+                  fold into one profile. Pin one to a site with “chesscom:handle” if a name clashes.</span>
+              </label>
+              <label class="set-field">
+                <span class="set-label">Lichess token <span class="set-opt">(optional)</span></span>
+                <input id="set-token" type="password" autocomplete="off" placeholder="for higher rate limits + study export" />
+                <span class="set-hint">A personal access token raises your Lichess fetch rate limit; give it
+                  the <b>study:write</b> permission to enable the puzzle → study export.</span>
+              </label>
+              <label class="set-field">
+                <span class="set-label">Recent-form window <span class="set-opt">(games)</span></span>
+                <input id="set-recent" type="text" autocomplete="off" inputmode="numeric" />
+                <span class="set-hint">How many of your most recent games count as "current form" (0 = all games).</span>
+              </label>
+              <label class="set-field">
+                <span class="set-label">Lifetime window <span class="set-opt">(all, 0, or a number)</span></span>
+                <input id="set-lifetime" type="text" autocomplete="off" />
+                <span class="set-hint">All-time view layered on top: "all" = whole history, a number = last N, 0 = off.</span>
+              </label>
+              <label class="set-field">
+                <span class="set-label">Stockfish path</span>
+                <input id="set-stockfish" type="text" autocomplete="off" />
+                <span id="set-sf-status" class="set-hint"></span>
+              </label>
+              <div class="set-field">
+                <span class="set-label">Local AI model <span class="set-opt">(optional — run the AI locally instead of Claude)</span></span>
+                <span class="set-hint">Run the “why?” chat + AI coach entirely on your own machine instead
+                  of your Claude subscription — <b>no <code>claude</code> CLI or login needed</b>. Connects
+                  directly to any local server with an OpenAI-compatible API (Ollama, LM Studio, llama.cpp,
+                  a LiteLLM proxy, and more). <b>Ollama is easiest:</b> just click <b>Detect Ollama</b>
+                  below. For anything else, fill in the URL (and model) by hand. Leave blank to use Claude.</span>
+                <div class="set-llm-row">
+                  <button type="button" id="set-ollama-detect" class="linklike">Detect Ollama</button>
+                  <span id="set-ollama-status" class="set-hint"></span>
+                </div>
+                <label class="set-sub">
+                  <span class="set-sub-label">URL</span>
+                  <input id="set-local-llm-url" type="text" autocomplete="off" placeholder="http://localhost:11434" />
+                </label>
+                <label class="set-sub" id="set-ollama-pick-row" hidden>
+                  <span class="set-sub-label">Detected</span>
+                  <select id="set-ollama-model-select"></select>
+                </label>
+                <label class="set-sub">
+                  <span class="set-sub-label">Model</span>
+                  <input id="set-local-llm-model" type="text" autocomplete="off" placeholder="e.g. qwen2.5-coder" />
+                </label>
+              </div>
+            </details>
+
+            <div class="set-actions">
+              <button type="button" id="settings-cancel" class="linklike">Cancel</button>
+              <button type="submit" class="btn primary">Save</button>
+            </div>
+            <p id="settings-status" class="muted set-hint"></p>
+          </form>
+        </div>
+      </main>
     </div>
 
     <!-- First-run prompt (app mode only): shown when there's no configured/saved account. Two
@@ -283,160 +451,6 @@
           <input id="firstrun-chesscom-user" type="text" autocomplete="off" placeholder="ChessComUsername" />
         </label>
         <button type="submit" class="btn primary">Continue</button>
-      </form>
-    </div>
-
-    <!-- Settings: edit what used to live in .mcp.json, so the app is standalone. -->
-    <div id="settings" class="firstrun-overlay" hidden>
-      <form id="settings-form" class="firstrun-card settings-card">
-        <h2>Settings</h2>
-        <label class="set-field">
-          <span class="set-label">Lichess username <span class="set-opt">(optional)</span></span>
-          <input id="set-username" type="text" autocomplete="off" placeholder="your Lichess handle" />
-          <span class="set-hint">Lets the app auto-open your latest game, and decides which side is
-            “you”, your <b>My games</b>, and your coaching profile.</span>
-        </label>
-
-        <label class="set-field">
-          <span class="set-label">Chess.com username <span class="set-opt">(optional)</span></span>
-          <input id="set-chesscom" type="text" autocomplete="off" placeholder="ChessComUsername" />
-          <span class="set-hint">Your recent Chess.com games are recognised as yours and folded into
-            one profile. Auto-sync (below) can also analyze new ones on launch.</span>
-        </label>
-
-        <label class="set-field set-check">
-          <span class="set-check-row">
-            <input id="set-chesscom-sync" type="checkbox" />
-            <span class="set-label">Auto-sync new Chess.com games on launch</span>
-          </span>
-          <span class="set-hint">On each launch, check your most recent Chess.com games and analyze any
-            not already reviewed. Off: fetch only when you press ⟳ Sync in Games.</span>
-        </label>
-
-        <div id="chesscom-sync-max-field" class="set-field" hidden>
-          <span class="set-label">How many recent games to check</span>
-          <input id="set-chesscom-sync-max" type="number" min="1" max="50" step="1"
-            autocomplete="off" inputmode="numeric" />
-          <span class="set-hint">Already-reviewed games are skipped — if these are all analyzed
-            already, nothing new runs.</span>
-        </div>
-
-        <label class="set-field set-check">
-          <span class="set-check-row">
-            <input id="set-coach-ai-auto" type="checkbox" />
-            <span class="set-label">Auto-generate AI coach summary <span class="set-opt">(uses your Claude subscription)</span></span>
-          </span>
-          <span class="set-hint">Auto-write the fuller summary for every game, instead of pressing the
-            button under the board. The quick side-panel summary always shows.</span>
-        </label>
-
-        <label class="set-field set-check">
-          <span class="set-check-row">
-            <input id="set-personalize" type="checkbox" />
-            <span class="set-label">Personalize AI coach with my history</span>
-          </span>
-          <span class="set-hint">Include your cross-game history so Kibitz coaches you on recurring
-            patterns. Turn off to send fewer tokens.</span>
-        </label>
-
-        <label class="set-field set-check">
-          <span class="set-check-row">
-            <input id="set-skill-auto" type="checkbox" />
-            <span class="set-label">Auto-scale mistake sensitivity to each game's rating</span>
-          </span>
-          <span class="set-hint">On: reads each game's Elo from the PGN to decide how strict to be.
-            Turn off to set your own level.</span>
-        </label>
-
-        <div id="skill-manual" class="set-field" hidden>
-          <span class="set-label">Mistake sensitivity
-            <span class="set-opt" id="set-elo-label"></span></span>
-          <input id="set-elo" type="range" min="400" max="2400" step="50" value="1200" />
-          <div class="set-slider-ends"><span>More forgiving</span><span>Stricter</span></div>
-          <span class="set-hint">Higher flags subtler mistakes (and searches deeper); lower flags only
-            clearer blunders.</span>
-        </div>
-
-        <label class="set-field">
-          <span class="set-label">Coaching memory</span>
-          <select id="set-profile-mode">
-            <option value="balanced">Recent form + all-time (recommended)</option>
-            <option value="recent">Recent games only</option>
-            <option value="all">My whole history (weigh all equally)</option>
-            <option value="custom">Custom — set the windows below</option>
-          </select>
-          <span id="set-profile-hint" class="set-hint"></span>
-        </label>
-
-        <details class="set-adv">
-          <summary>Advanced</summary>
-          <label class="set-field set-check">
-            <span class="set-check-row">
-              <input id="set-coach-ai-persist" type="checkbox" />
-              <span class="set-label">Remember AI coach summaries between sessions</span>
-            </span>
-            <span class="set-hint">On (default): a generated Kibitz summary is saved with the game, so
-              reopening it later shows the saved text instead of spending Claude to regenerate. Use the
-              ⟳ on the summary to re-run it anyway. Off: summaries regenerate each time you reopen.</span>
-          </label>
-          <label class="set-field">
-            <span class="set-label">Other accounts <span class="set-opt">(optional)</span></span>
-            <input id="set-aliases" type="text" autocomplete="off" placeholder="my_other_lichess, another_handle" />
-            <span class="set-hint">Any additional handles that are also you (comma-separated) — they
-              fold into one profile. Pin one to a site with “chesscom:handle” if a name clashes.</span>
-          </label>
-          <label class="set-field">
-            <span class="set-label">Lichess token <span class="set-opt">(optional)</span></span>
-            <input id="set-token" type="password" autocomplete="off" placeholder="for higher rate limits + study export" />
-            <span class="set-hint">A personal access token raises your Lichess fetch rate limit; give it
-              the <b>study:write</b> permission to enable the puzzle → study export.</span>
-          </label>
-          <label class="set-field">
-            <span class="set-label">Recent-form window <span class="set-opt">(games)</span></span>
-            <input id="set-recent" type="text" autocomplete="off" inputmode="numeric" />
-            <span class="set-hint">How many of your most recent games count as "current form" (0 = all games).</span>
-          </label>
-          <label class="set-field">
-            <span class="set-label">Lifetime window <span class="set-opt">(all, 0, or a number)</span></span>
-            <input id="set-lifetime" type="text" autocomplete="off" />
-            <span class="set-hint">All-time view layered on top: "all" = whole history, a number = last N, 0 = off.</span>
-          </label>
-          <label class="set-field">
-            <span class="set-label">Stockfish path</span>
-            <input id="set-stockfish" type="text" autocomplete="off" />
-            <span id="set-sf-status" class="set-hint"></span>
-          </label>
-          <div class="set-field">
-            <span class="set-label">Local AI model <span class="set-opt">(optional — run the AI locally instead of Claude)</span></span>
-            <span class="set-hint">Run the “why?” chat + AI coach entirely on your own machine instead
-              of your Claude subscription — <b>no <code>claude</code> CLI or login needed</b>. Connects
-              directly to any local server with an OpenAI-compatible API (Ollama, LM Studio, llama.cpp,
-              a LiteLLM proxy, and more). <b>Ollama is easiest:</b> just click <b>Detect Ollama</b>
-              below. For anything else, fill in the URL (and model) by hand. Leave blank to use Claude.</span>
-            <div class="set-llm-row">
-              <button type="button" id="set-ollama-detect" class="linklike">Detect Ollama</button>
-              <span id="set-ollama-status" class="set-hint"></span>
-            </div>
-            <label class="set-sub">
-              <span class="set-sub-label">URL</span>
-              <input id="set-local-llm-url" type="text" autocomplete="off" placeholder="http://localhost:11434" />
-            </label>
-            <label class="set-sub" id="set-ollama-pick-row" hidden>
-              <span class="set-sub-label">Detected</span>
-              <select id="set-ollama-model-select"></select>
-            </label>
-            <label class="set-sub">
-              <span class="set-sub-label">Model</span>
-              <input id="set-local-llm-model" type="text" autocomplete="off" placeholder="e.g. qwen2.5-coder" />
-            </label>
-          </div>
-        </details>
-
-        <div class="set-actions">
-          <button type="button" id="settings-cancel" class="linklike">Cancel</button>
-          <button type="submit" class="btn primary">Save</button>
-        </div>
-        <p id="settings-status" class="muted set-hint"></p>
       </form>
     </div>
 

@@ -81,6 +81,7 @@ const HISTORY_PAGE = 10; // initial count + how many more each "Show more"
 // { list:[puzzle...], idx, filter:{motif}, tries, revealed, solved }. See the puzzle section below.
 let puzzle = null;
 let preDrillMeta = ""; // #game-meta text from before the drill, restored on exit
+let preDrillOrient = null; // board orientation from before the drill (puzzles flip to the solver)
 
 // App mode (double-click launcher): on open, auto-load the user's most recent game.
 // `appUsername` is the Lichess handle (config.LICHESS_USERNAME); it drives "open my latest game"
@@ -1079,6 +1080,7 @@ async function loadAll() {
     return;
   }
   applySession(session);
+  showSidePane("review"); // a game is on the board — surface its analysis, not the games list
   const tl = await fetch("/api/timeline").then((r) => r.json());
   if (myGen !== chatGen) return;
   applyTimeline(tl);
@@ -2074,10 +2076,7 @@ function renderInsights(d) {
   body.innerHTML = parts.join("");
   // Weakness bars drill straight into the puzzle trainer for that motif.
   body.querySelectorAll("[data-motif]").forEach((el) => {
-    const go = () => {
-      setMode("puzzles");
-      startPuzzles(el.dataset.motif);
-    };
+    const go = () => startPuzzles(el.dataset.motif); // navigates to the Puzzles view itself
     el.addEventListener("click", go);
     el.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") {
@@ -2092,35 +2091,53 @@ function renderInsights(d) {
   }
 }
 
-// Just the tab chrome (active buttons + which pane is shown), no data fetch. Two levels: the top
 // --- app shell: the icon rail routes between full views --------------------------------------
-// One view is visible at a time: review (the board), games, puzzles, insights. The board element
-// lives in the review view; drills and opened games navigate there.
-const VIEWS = ["review", "games", "puzzles", "insights"];
+// One view is visible at a time: review (board + games/analysis), puzzles (board + filters),
+// insights, settings. The board column is ONE shared element, re-parented into whichever view
+// is active (review-board-slot / puzzle-board-slot) so there's a single Chessground instance.
+const VIEWS = ["review", "puzzles", "insights", "settings"];
 let currentView = "review";
+let lastMainView = "review"; // where Cancel/Save in Settings returns to
+
+function placeBoard(view) {
+  const slot = $(view === "puzzles" ? "puzzle-board-slot" : "review-board-slot");
+  const boardCol = document.querySelector(".board-col");
+  if (!slot || !boardCol || boardCol.parentElement === slot) return;
+  slot.appendChild(boardCol);
+  // Chessground caches its bounds; re-measure after the move settles in the new layout.
+  if (ground) requestAnimationFrame(() => ground.redrawAll());
+}
 
 function showView(name) {
   if (!VIEWS.includes(name)) return;
+  if (name !== "settings") lastMainView = name;
   currentView = name;
   for (const v of VIEWS) {
     $(`view-${v}`).classList.toggle("active", v === name);
     $(`rail-${v}`).classList.toggle("active", v === name);
   }
+  placeBoard(name);
   // Entering a data view refreshes it (cheap: local reads), so it's never stale.
-  if (name === "games") setMode(historyMode);
+  if (name === "review" && sidePane === "games") setMode(historyMode);
   else if (name === "puzzles") loadPuzzleThemes();
   else if (name === "insights") loadInsights();
+  else if (name === "settings") populateSettings();
 }
 
-// Bring the board in front (games/drills open onto it) — every "open something" path calls this.
+// Review's right panel: the games list, or the analysis of the open game.
+let sidePane = "games";
+function showSidePane(pane) {
+  sidePane = pane === "review" ? "review" : "games";
+  $("side-games").classList.toggle("active", sidePane === "games");
+  $("side-review").classList.toggle("active", sidePane === "review");
+  $("games-pane").hidden = sidePane !== "games";
+  $("review-pane").hidden = sidePane !== "review";
+}
+
+// Bring the board + analysis in front (opening a game lands here) — every "open" path calls this.
 function showBoard() {
   showView("review");
-}
-
-// Hide the game side column (moves / mistakes / AI-coach chat) during a drill: it describes a
-// game the user isn't looking at.
-function updateFocusMode() {
-  document.body.classList.toggle("focus-mode", !!puzzle);
+  showSidePane("review");
 }
 
 // Games view: which source is active (My games / Lichess / Chess.com / Paste).
@@ -2189,19 +2206,19 @@ async function loadPuzzleThemes() {
 }
 
 async function startPuzzles(motif) {
-  $("history-status").textContent = "Loading puzzles…";
+  $("puzzles-status").textContent = "Loading puzzles…";
   const q = new URLSearchParams({ days: String(puzzleDays), limit: "60", kinds: puzzleKinds });
   if (motif) q.set("motif", motif);
   let data;
   try {
     data = await fetch("/api/puzzles?" + q.toString()).then((r) => r.json());
   } catch (_) {
-    $("history-status").textContent = "Couldn't load puzzles.";
+    $("puzzles-status").textContent = "Couldn't load puzzles.";
     return;
   }
   const list = (data && data.puzzles) || [];
   if (!list.length) {
-    $("history-status").textContent = "No puzzles for that theme yet.";
+    $("puzzles-status").textContent = "No puzzles for that theme yet.";
     return;
   }
   // Present in random order (Fisher–Yates): the API returns hardest-first, so without this the
@@ -2210,10 +2227,13 @@ async function startPuzzles(motif) {
     const j = Math.floor(Math.random() * (i + 1));
     [list[i], list[j]] = [list[j], list[i]];
   }
-  if (!puzzle) preDrillMeta = $("game-meta").textContent;
+  if (!puzzle) {
+    preDrillMeta = $("game-meta").textContent;
+    preDrillOrient = orient;
+  }
   puzzle = { list, idx: 0, motif, tries: 0, revealed: false, solved: false };
-  showBoard(); // the drill runs on the board, in the Review view
-  $("history-status").textContent = "";
+  showView("puzzles"); // the drill runs on the board slot inside the Puzzles view
+  $("puzzles-status").textContent = "";
   showPuzzle(0);
 }
 
@@ -2410,7 +2430,6 @@ function renderPuzzlePanel() {
   // The drill borrows the nav-buttons slot: game navigation is meaningless mid-puzzle, so the
   // Reveal/Next bar replaces it (and gives it back on exit) instead of stacking below the fold.
   $("game-controls").style.display = puzzle ? "none" : "";
-  updateFocusMode(); // drills also hide the (stale-game) side column
   if (!puzzle) {
     bar.hidden = true;
     return;
@@ -2437,6 +2456,8 @@ function exitPuzzleMode() {
   // Restore whatever game was on the board before (if any), else a neutral message.
   if (timeline.length) {
     $("game-meta").textContent = preDrillMeta;
+    if (preDrillOrient) orient = preDrillOrient; // undo the puzzle's solver-side flip
+    applyEvalBarTheme();
     gotoNode(clamp(cur, 0, timeline.length - 1));
   } else {
     $("status").textContent = "";
@@ -2571,14 +2592,14 @@ function updateSkillUI() {
   }
 }
 
-async function openSettings() {
+// Fill the Settings view's form from the server — runs every time the view is entered.
+async function populateSettings() {
   $("settings-status").textContent = "";
   let data;
   try {
     data = await fetch("/api/settings").then((r) => r.json());
   } catch (_) {
     $("settings-status").textContent = "Could not load settings.";
-    $("settings").hidden = false;
     return;
   }
   const s = data.settings || {};
@@ -2610,8 +2631,6 @@ async function openSettings() {
   $("set-sf-status").textContent = data.stockfish_ok
     ? "Stockfish engine found ✓"
     : "Stockfish not found — analysis won't run until this points at the engine.";
-  $("settings").hidden = false;
-  $("set-username").focus();
 }
 
 // One-click Ollama setup: fill in the default URL if blank, ask the backend what models Ollama
@@ -2695,7 +2714,7 @@ async function saveSettings(e) {
   appUsername = (res.settings && res.settings.username) || "";
   chesscomUsername = (res.settings && res.settings.chesscom_username) || "";
   if (appUsername) $("lichess-user").placeholder = appUsername;
-  $("settings").hidden = true;
+  showView(lastMainView); // saved — leave the Settings view
   // Apply the auto-summary preference without clobbering a summary that's already shown/pending:
   // only act when nothing's there yet (turn-on -> generate now; turn-off -> offer the button).
   coachAiAuto = !!(res.settings && res.settings.coach_ai_auto);
@@ -2842,9 +2861,9 @@ function boardSizeBounds() {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const RAIL = 64; // the icon rail (styles.css --rail-w)
-  const PAD = 44; // review view's left+right padding
-  const GAP = 24; // gap between board and analysis columns
-  const SIDE_MIN = 300; // keep the analysis column usable
+  const PAD = 44; // the centred .duo row's left+right padding
+  const GAP = 48; // gaps around the resizer between board and side columns
+  const SIDE_MIN = 320; // keep the side column usable
   const EVALBAR = 28; // eval bar + its gap (col-width = board-size + 28)
   const maxByWidth = vw - RAIL - PAD - GAP - SIDE_MIN - EVALBAR;
   const maxByHeight = Math.round(vh * 0.92);
@@ -2946,7 +2965,7 @@ function initBoardResizer() {
 }
 
 function init() {
-  showBoard(); // the Review view (the board) is the landing view
+  showView("review"); // landing view: board + games list (the games pane is active by default)
   ground = Chessground($("board"), {
     fen: chess.fen(),
     orientation: orient,
@@ -2990,12 +3009,17 @@ function init() {
   $("coach-ai-btn").addEventListener("click", fetchCoachAI);
   $("chat-form").addEventListener("submit", sendChat);
 
-  // Games panel: collapse toggle, mode slider, lichess lookup.
-  // The rail: primary navigation between the four views.
+  // The rail: primary navigation between the four views (Settings included).
   for (const v of VIEWS) {
     $(`rail-${v}`).addEventListener("click", () => showView(v));
   }
-  // Games view: source tabs.
+  // Review's right panel: Games list vs Analysis of the open game.
+  $("side-games").addEventListener("click", () => {
+    showSidePane("games");
+    setMode(historyMode);
+  });
+  $("side-review").addEventListener("click", () => showSidePane("review"));
+  // Games pane: source tabs.
   $("mode-normal").addEventListener("click", () => setMode("normal"));
   $("mode-lichess").addEventListener("click", () => setMode("lichess"));
   $("mode-chesscom").addEventListener("click", () => setMode("chesscom"));
@@ -3068,9 +3092,8 @@ function init() {
     $("insights-body").innerHTML = `<p class="muted">Loading…</p>`;
     loadInsights();
   });
-  // Settings panel.
-  $("settings-toggle").addEventListener("click", openSettings);
-  $("settings-cancel").addEventListener("click", () => ($("settings").hidden = true));
+  // Settings view (opened from the rail; populate happens in showView).
+  $("settings-cancel").addEventListener("click", () => showView(lastMainView));
   $("settings-form").addEventListener("submit", saveSettings);
   $("set-profile-mode").addEventListener("change", applyProfilePreset);
   $("set-recent").addEventListener("input", syncProfileModeFromFields);
@@ -3135,7 +3158,8 @@ function init() {
       showView("review"); // jump back to the board
     } else if (e.key === "g" || e.key === "G") {
       e.preventDefault();
-      showView("games");
+      showView("review"); // the games list lives in Review's right panel
+      showSidePane("games");
     }
   });
 
