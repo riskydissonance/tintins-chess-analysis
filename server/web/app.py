@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
@@ -114,6 +115,18 @@ def create_app() -> FastAPI:
     # In app mode (double-click launcher), self-exit shortly after the browser tab is closed.
     # No-op for the MCP-driven board and tests (config.APP_MODE is off there).
     app_liveness.start()
+
+    # Catch-all safety net: a bug in any route handler returns a logged JSON 500 instead of
+    # bubbling up and (in the worst case) taking the server down. Starlette already recovers from
+    # most handler exceptions on its own, but making it explicit here means it's logged the same
+    # way everywhere and doesn't depend on that default behaviour.
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        import traceback
+
+        traceback.print_exc()
+        print(f"[chess-web] request error: {exc}", file=sys.stderr, flush=True)
+        return JSONResponse({"error": "internal server error"}, status_code=500)
 
     guard_active = _guard_is_active()
 

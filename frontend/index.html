@@ -435,6 +435,18 @@
             </div>
             <p id="settings-status" class="muted set-hint"></p>
           </form>
+
+          <!-- App mode only (standalone .app): quits the server, mirroring the app-liveness
+               watchdog's own exit path, but user-initiated instead of tab-close/idle-triggered. -->
+          <div id="settings-quit-row" class="settings-card" hidden>
+            <label class="set-field">
+              <span class="set-label">Quit Kibitz</span>
+              <span class="set-hint">Stops the local Kibitz server. Reopen the app to start it again.</span>
+            </label>
+            <div class="set-actions">
+              <button type="button" id="settings-quit" class="btn danger">Quit Kibitz</button>
+            </div>
+          </div>
         </div>
       </main>
     </div>
@@ -457,6 +469,17 @@
         </label>
         <button type="submit" class="btn primary">Continue</button>
       </form>
+    </div>
+
+    <!-- Server-stopped overlay: shown by the health watcher (all modes) when the server stops
+         answering — crash, watchdog exit, or the user pressing Quit. Never leave the tab silently
+         dead; always say so. Hidden by default, above everything else (see styles.css). -->
+    <div id="server-stopped" class="server-stopped-overlay" hidden role="dialog" aria-modal="true"
+         aria-labelledby="server-stopped-title" aria-describedby="server-stopped-body">
+      <div class="server-stopped-card">
+        <h2 id="server-stopped-title">Kibitz has stopped</h2>
+        <p id="server-stopped-body">The Kibitz server is no longer running. Reopen the app to continue.</p>
+      </div>
     </div>
 
     <script type="module" src="/main.js"></script>

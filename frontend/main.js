@@ -1063,6 +1063,7 @@ async function loadAll() {
   if (appUsername) $("lichess-user").placeholder = appUsername;
   if (chesscomUsername) $("chesscom-user").placeholder = chesscomUsername;
   if (appMode) startHeartbeat(); // so closing this tab quits the standalone app
+  startHealthWatcher(); // all modes: never leave the tab silently dead if the server goes away
   checkSetup(); // surface a banner if Stockfish / the claude CLI is missing (fire-and-forget)
   checkUpdates(); // surface an "update available" banner in app mode (fire-and-forget)
   checkOnline(); // surface a banner if there's no internet (network features unavailable)
@@ -1291,6 +1292,78 @@ function startHeartbeat() {
       navigator.sendBeacon("/api/closing");
     } catch (_) {}
   });
+}
+
+// --- server-stopped overlay + health watcher ------------------------------
+// Runs in ALL modes (MCP-hosted board included), not just the standalone app: whatever kills the
+// server — a crash, the app-liveness/idle watchdogs, or the user pressing Quit — the tab must say
+// so instead of just silently stopping working. Polls a cheap, side-effect-free GET; after a
+// couple of consecutive misses it shows the overlay, and hides it again if the server comes back
+// (covers a transient blip, or a crash-restart by the .app launcher's supervisor loop).
+const HEALTH_POLL_MS = 5000;
+const HEALTH_FAIL_THRESHOLD = 2; // ~10s of silence before we say anything
+let healthTimer = null;
+let healthFails = 0;
+let userInitiatedShutdown = false; // set by the Quit button, so the overlay reads "shut down", not "stopped"
+
+function startHealthWatcher() {
+  if (healthTimer) return;
+  const poll = async () => {
+    try {
+      const r = await fetch("/api/health", { cache: "no-store" });
+      if (!r.ok) throw new Error(String(r.status));
+      healthFails = 0;
+      if (!userInitiatedShutdown) hideServerStoppedOverlay();
+    } catch (_) {
+      healthFails += 1;
+      if (healthFails >= HEALTH_FAIL_THRESHOLD) showServerStoppedOverlay();
+    }
+  };
+  poll();
+  healthTimer = setInterval(poll, HEALTH_POLL_MS);
+}
+
+function showServerStoppedOverlay() {
+  const overlay = $("server-stopped");
+  if (!overlay) return;
+  const title = $("server-stopped-title");
+  const body = $("server-stopped-body");
+  if (userInitiatedShutdown) {
+    if (title) title.textContent = "Kibitz has shut down";
+    if (body) body.textContent = "You can close this tab.";
+  } else {
+    if (title) title.textContent = "Kibitz has stopped";
+    body.textContent = appMode
+      ? "The Kibitz server is no longer running. Reopen the app to continue."
+      : "The Kibitz server is no longer running.";
+  }
+  overlay.hidden = false;
+}
+
+function hideServerStoppedOverlay() {
+  const overlay = $("server-stopped");
+  if (overlay) overlay.hidden = true;
+}
+
+// Settings → Quit Kibitz (app mode only): confirm, then POST /api/shutdown. The server responds
+// 200 before it actually exits (see routes_board.post_shutdown), so we always get an answer.
+async function quitApp() {
+  if (!confirm("Quit Kibitz? This stops the local server; reopen the app to use it again.")) return;
+  let res = {};
+  try {
+    res = await fetch("/api/shutdown", { method: "POST" }).then((r) => r.json());
+  } catch (_) {
+    // The request itself failing usually means the server is already gone — treat it the same.
+    userInitiatedShutdown = true;
+    showServerStoppedOverlay();
+    return;
+  }
+  if (res && res.ok) {
+    userInitiatedShutdown = true;
+    showServerStoppedOverlay();
+  } else if (res && res.message) {
+    alert(res.message);
+  }
 }
 
 // App-mode empty board: first try the chess.com auto-sync (new games found -> the board shows the
@@ -2670,6 +2743,7 @@ function updateSkillUI() {
 // Fill the Settings view's form from the server — runs every time the view is entered.
 async function populateSettings() {
   $("settings-status").textContent = "";
+  $("settings-quit-row").hidden = !appMode; // Quit only makes sense for the standalone .app
   let data;
   try {
     data = await fetch("/api/settings").then((r) => r.json());
@@ -3174,6 +3248,7 @@ function init() {
   // Settings view (opened from the rail; populate happens in showView).
   $("settings-cancel").addEventListener("click", () => showView(lastMainView));
   $("settings-form").addEventListener("submit", saveSettings);
+  $("settings-quit").addEventListener("click", quitApp);
   $("set-profile-mode").addEventListener("change", applyProfilePreset);
   $("set-recent").addEventListener("input", syncProfileModeFromFields);
   $("set-lifetime").addEventListener("input", syncProfileModeFromFields);

@@ -154,3 +154,31 @@ def test_opaque_origin_allowed_for_reads_blocked_for_writes():
     client = TestClient(app_module.create_app())
     assert client.get("/api/app-config", headers={"origin": "null"}).status_code == 200
     assert client.post("/api/chat", headers={"origin": "null"}, json={"question": "hi"}).status_code == 403
+
+
+# --- /api/health + /api/shutdown ------------------------------------------------------------------
+
+
+def test_health_endpoint_reports_ok():
+    # The frontend's health watcher (startHealthWatcher() in main.js) polls this to detect a dead
+    # server and show the "Kibitz has stopped" overlay. Must be a cheap, side-effect-free GET.
+    client = TestClient(app_module.create_app())
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+def test_shutdown_is_a_noop_outside_app_mode():
+    # APP_MODE is off by default in tests (no CHESS_APP_MODE=1) — /api/shutdown must refuse to kill
+    # an MCP-hosted process. Returns 200 with ok=False rather than erroring, so the frontend can show
+    # the returned message. Crucially, the test process must still be alive afterward.
+    from server import config
+
+    assert config.APP_MODE is False
+    client = TestClient(app_module.create_app())
+    r = client.post("/api/shutdown")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["app_mode"] is False
+    assert "message" in body

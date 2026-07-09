@@ -105,6 +105,8 @@ code {
   font-weight: 600;
 }
 .btn.primary:hover { background: var(--accent-strong); color: #fff; }
+.btn.danger { background: transparent; border-color: #b23b3b; color: #d9534f; }
+.btn.danger:hover { background: #b23b3b; color: #fff; }
 
 .linklike {
   background: none; border: none; color: var(--text-2); cursor: pointer;
@@ -1020,6 +1022,25 @@ input:focus, textarea:focus, select:focus {
 .set-sub input, .set-sub select { flex: 1; }
 .set-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; margin-top: 4px; }
 #settings-status:empty { display: none; }
+#settings-quit-row { margin-top: 16px; }
+
+/* Server-stopped overlay: the health watcher shows this when /api/health stops answering (crash,
+   watchdog exit, or a user-initiated Quit). Sits above everything, including the firstrun overlay
+   (z-index 100) — once the server is gone there's nothing left to interact with underneath. */
+.server-stopped-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(2px);
+}
+.server-stopped-overlay[hidden] { display: none; }
+.server-stopped-card {
+  background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: 14px;
+  padding: 28px 30px; width: min(420px, 90vw); text-align: center;
+  box-shadow: var(--shadow-2);
+}
+.server-stopped-card h2 { margin: 0 0 10px; font-size: var(--fs-4); }
+.server-stopped-card p { margin: 0; font-size: var(--fs-1); color: var(--text-2); }
 
 /* --- 9. Responsive ----------------------------------------------------------------------------- */
 /* Stack the board views when board + side panel no longer fit side by side. */

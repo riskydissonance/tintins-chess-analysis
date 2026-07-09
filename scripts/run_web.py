@@ -20,6 +20,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -34,6 +35,12 @@ from server.core import session as session_mod
 from server.core import settings
 from server.core.game_analysis import analyze_game
 from server.web.app import create_app
+
+# Distinct exit code for an actual crash (uvicorn raised), vs. 0 for a clean shutdown (server
+# returned normally, Ctrl-C, or an intentional os._exit(0) watchdog). EX_SOFTWARE, the standard
+# BSD sysexits code for "an internal software error was detected". The .app launcher's supervisor
+# loop (scripts/build_app.sh) reads this to tell "quit on purpose" apart from "keep restarting".
+CRASH_EXIT_CODE = 70
 
 
 def main() -> int:
@@ -74,6 +81,12 @@ def main() -> int:
 
     try:
         uvicorn.run(create_app(), host=config.WEB_HOST, port=config.WEB_PORT, log_level="info")
+    except KeyboardInterrupt:
+        pass  # Ctrl-C is a clean, user-requested stop — exit 0, not a crash
+    except Exception as exc:  # noqa: BLE001 - anything else is a genuine crash; report it, don't propagate
+        traceback.print_exc()
+        print(f"[chess-web] server crashed: {exc}", file=sys.stderr, flush=True)
+        return CRASH_EXIT_CODE
     finally:
         engine.shutdown()
     return 0

@@ -289,7 +289,45 @@ export CHESS_WEB_OPEN=0            # the splash tab opened above redirects itsel
 export PYTHONDONTWRITEBYTECODE=1   # don't try to write .pyc into the read-only bundle
 echo "Starting board at ${URL}"
 cd "$REPO"
-exec "$ENV_DIR/bin/python" "$REPO/scripts/run_web.py" --serve
+
+# Supervise the server instead of `exec`ing it straight, so we can tell a clean shutdown apart
+# from a crash and, in the crash case, restart it automatically instead of leaving the user with
+# a dead tab. run_web.py's exit code carries the distinction (see scripts/run_web.py):
+#   0  -> intentional stop (browser closed / idle timeout / user Quit / Ctrl-C) -> just exit.
+#   70 -> CRASH_EXIT_CODE (an unhandled exception reached uvicorn.run)          -> restart.
+#   *  -> anything else (e.g. killed by a signal) is treated the same as a crash -> restart.
+# Restarts are capped at 3 within a rolling 60s window so a persistent crash (bad config, missing
+# dependency) doesn't spin forever — past the cap we give up and tell the user via a dialog.
+RESTART_TIMES=()
+while true; do
+  "$ENV_DIR/bin/python" "$REPO/scripts/run_web.py" --serve
+  CODE=$?
+
+  if [ "$CODE" -eq 0 ]; then
+    echo "=== server exited cleanly $(date) ==="
+    exit 0
+  fi
+
+  echo "=== server exited with code $CODE (crash) $(date) ==="
+
+  NOW=$(date +%s)
+  RESTART_TIMES+=("$NOW")
+  # Drop restart timestamps older than the 60s window, keeping only ones inside it.
+  RECENT=()
+  for T in "${RESTART_TIMES[@]}"; do
+    if [ $((NOW - T)) -le 60 ]; then
+      RECENT+=("$T")
+    fi
+  done
+  RESTART_TIMES=("${RECENT[@]}")
+
+  if [ "${#RESTART_TIMES[@]}" -gt 3 ]; then
+    die "Kibitz kept crashing on startup — see the log at $LOG"
+  fi
+
+  echo "=== restarting ($(( ${#RESTART_TIMES[@]} )) crash(es) in the last 60s) $(date) ==="
+  sleep 1  # avoid spinning the CPU on a tight crash loop
+done
 LAUNCHER
 chmod +x "$MACOS/launcher"
 ok "Wrote launcher"

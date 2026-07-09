@@ -6,6 +6,8 @@ the same singleton ReviewSession + engine pool the MCP tools use.
 """
 from __future__ import annotations
 
+import sys
+
 import chess
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -66,6 +68,50 @@ async def post_closing() -> dict:
     with no heartbeat (i.e. not a refresh) the server exits. Sent via navigator.sendBeacon.
     `async` for the same reason as /ping: the liveness signals must never wait on the threadpool."""
     app_liveness.closing()
+    return {"ok": True}
+
+
+@router.get("/health")
+async def get_health() -> dict:
+    """Trivial liveness probe for the frontend's health watcher: cheap, side-effect-free, GET.
+    `async` + no session/engine work so it never queues behind a slow board request."""
+    return {"ok": True}
+
+
+@router.post("/shutdown")
+def post_shutdown() -> dict:
+    """User-requested shutdown (the Settings "Quit" button), app mode only.
+
+    We respond BEFORE exiting, not instead of exiting: the browser needs its 200 to show the
+    "shut down cleanly" overlay, but if we exited first the response would never arrive and the
+    tab would look like a crash. So we schedule the actual exit on a short-delay daemon thread —
+    long enough for this response to reach the browser — and return immediately. Mirrors the
+    app_liveness watchdog's `engine.shutdown()` then `os._exit(0)`.
+
+    A no-op outside app mode: this must never be able to kill an MCP-hosted server."""
+    if not config.APP_MODE:
+        return {
+            "ok": False,
+            "app_mode": False,
+            "message": "Shutdown is only available in the standalone app.",
+        }
+
+    def _deferred_exit() -> None:
+        import os
+        import time
+
+        from server.core import engine
+
+        time.sleep(0.5)  # let the 200 response above actually reach the browser first
+        try:
+            engine.shutdown()
+        finally:
+            os._exit(0)
+
+    import threading
+
+    print("[chess-app] user requested shutdown", file=sys.stderr, flush=True)
+    threading.Thread(target=_deferred_exit, name="chess-app-user-shutdown", daemon=True).start()
     return {"ok": True}
 
 
