@@ -10,7 +10,7 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta name="theme-color" content="#1f2733" />
+    <meta name="theme-color" content="#141210" />
     <!-- Vendored locally (frontend/vendor) so the board renders fully offline — no CDN. -->
     <link rel="stylesheet" href="/vendor/chessground.base.css" />
     <link rel="stylesheet" href="/vendor/chessground.brown.css" />
@@ -18,246 +18,257 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header>
-      <h1>
-        Kibitz
-        <span class="help" tabindex="0" aria-label="Keyboard shortcuts">?
-          <span class="help-tip" role="tooltip">
-            <b>Keyboard shortcuts</b>
-            <span><kbd>←</kbd> / <kbd>→</kbd> previous / next move</span>
-            <span><kbd>↑</kbd> / <kbd>↓</kbd> start / end of game</span>
-            <span><kbd>Space</kbd> next move</span>
-            <span><kbd>n</kbd> / <kbd>p</kbd> next / previous mistake</span>
-            <span><kbd>f</kbd> flip board</span>
-            <span><kbd>l</kbd> toggle best move</span>
-            <span><kbd>t</kbd> toggle threat arrows</span>
-          </span>
+    <!-- ===== App shell: a slim icon rail (primary navigation) + one view at a time ========== -->
+    <nav id="rail" aria-label="Primary">
+      <div class="rail-brand" title="Kibitz">♞</div>
+      <button id="rail-review" class="rail-btn active" title="Review — the board (r)" aria-label="Review">
+        <span class="rail-ico">▦</span><span class="rail-label">Review</span>
+      </button>
+      <button id="rail-games" class="rail-btn" title="Games — open or import a game (g)" aria-label="Games">
+        <span class="rail-ico">♟</span><span class="rail-label">Games</span>
+      </button>
+      <button id="rail-puzzles" class="rail-btn" title="Puzzles — drill your own mistakes" aria-label="Puzzles">
+        <span class="rail-ico">✦</span><span class="rail-label">Puzzles</span>
+      </button>
+      <button id="rail-insights" class="rail-btn" title="Insights — your patterns across games" aria-label="Insights">
+        <span class="rail-ico">📈</span><span class="rail-label">Insights</span>
+      </button>
+      <div class="rail-spacer"></div>
+      <span class="help rail-help" tabindex="0" aria-label="Keyboard shortcuts">?
+        <span class="help-tip" role="tooltip">
+          <b>Keyboard shortcuts</b>
+          <span><kbd>←</kbd> / <kbd>→</kbd> previous / next move</span>
+          <span><kbd>↑</kbd> / <kbd>↓</kbd> start / end of game</span>
+          <span><kbd>Space</kbd> next move</span>
+          <span><kbd>n</kbd> / <kbd>p</kbd> next / previous mistake</span>
+          <span><kbd>f</kbd> flip board</span>
+          <span><kbd>l</kbd> toggle best move</span>
+          <span><kbd>t</kbd> toggle threat arrows</span>
         </span>
-      </h1>
-      <div id="game-meta" class="muted">Loading…</div>
-      <button id="settings-toggle" class="hist-toggle" title="Settings"
-        aria-label="Settings">⚙ Settings</button>
-      <button id="history-toggle" class="hist-toggle" title="Show / hide the games panel"
-        aria-label="Toggle games panel">☰ Games</button>
-    </header>
+      </span>
+      <button id="settings-toggle" class="rail-btn" title="Settings" aria-label="Settings">
+        <span class="rail-ico">⚙</span><span class="rail-label">Settings</span>
+      </button>
+    </nav>
 
-    <!-- Setup self-check banner (filled by checkSetup() from /api/doctor): shown only when an
-         environment dependency is missing — red for a blocker (Stockfish), amber for the optional
-         claude CLI (AI chat / coach summary). Dismissible. -->
-    <div id="setup-banner" class="setup-banner" hidden></div>
-
-    <!-- Update-available notice (filled by checkUpdates() from /api/update-check, app mode only):
-         info-blue for a minor/patch release, red for a major one. Offers a one-click "Update now"
-         on git/zip installs, or a download link on the read-only .app. Dismissible per version. -->
-    <div id="update-banner" class="setup-banner update" hidden></div>
-
-    <!-- Offline notice (filled by checkOnline() from /api/connectivity): no internet was detected,
-         so the network-only features (Lichess fetch + endgame tablebase, and Claude AI unless a
-         local LLM is configured) won't work. Amber, informational, dismissible. -->
-    <div id="offline-banner" class="setup-banner" hidden></div>
-
-    <main>
-      <section class="board-col">
-        <div id="scoreboard" class="scoreboard" hidden></div>
-        <div class="board-wrap">
-          <div id="evalbar"><div id="evalbar-fill"></div></div>
-          <div id="board" class="cg-wrap"></div>
-        </div>
-
-        <div id="graph-wrap">
-          <svg id="graph" preserveAspectRatio="none"></svg>
-          <div id="analysis-progress" hidden>
-            <div id="analysis-progress-label">Analyzing…</div>
-            <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
-          </div>
-        </div>
-
-        <div class="controls" id="game-controls">
-          <div class="ctrl-group">
-            <button id="back" title="Back one move (←)">◀ Back</button>
-            <button id="fwd" title="Forward one move (→ or Space)">Forward ▶</button>
-          </div>
-          <div class="ctrl-group">
-            <button id="prev-mistake" title="Previous mistake (p)">‹ Mistake</button>
-            <button id="next-mistake" title="Next mistake (n)">Mistake ›</button>
-            <button id="reset" title="Snap back to the move under review">↩ Reset to move</button>
-          </div>
-          <label class="toggle" title="Toggle best-move arrows (l) — green = what should have been played instead of the dark played-move arrow (all green: the played move WAS best)">
-            <input type="checkbox" id="best-toggle" checked /> Show best move
-          </label>
-          <label class="toggle" title="Toggle threat arrows (t) — what the side that just moved is threatening, in yellow">
-            <input type="checkbox" id="threat-toggle" checked /> Show threats
-          </label>
-          <button id="flip-review" type="button" hidden
-            title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Review other side</button>
-        </div>
-
-        <!-- Puzzle-mode controls (Reveal / Next / Exit): swapped in for #game-controls while a
-             drill is active, so they sit in the same spot the nav buttons normally occupy. -->
-        <div id="puzzle-controls" class="controls puzzle-controls" hidden></div>
-        <div id="status" class="status"></div>
-      </section>
-
-      <!-- iPad-split-view-style drag handle: drag left/right to resize the board (and reflow the
-           analysis column); double-click to reset to the responsive default. position:fixed in CSS,
-           so its DOM position here doesn't affect layout. Behaviour: main.js initBoardResizer(). -->
-      <div id="col-resizer" class="col-resizer" role="separator" aria-orientation="vertical"
-        aria-label="Resize board — drag, or double-click to reset" tabindex="0"
-        title="Drag to resize the board · double-click to reset">
-        <div class="grip"><span></span><span></span><span></span></div>
+    <div id="shell">
+      <!-- Notices stack in one place, above whatever view is active. -->
+      <div id="notices">
+        <!-- Setup self-check banner (filled by checkSetup() from /api/doctor): shown only when an
+             environment dependency is missing — red for a blocker (Stockfish), amber for the
+             optional claude CLI (AI chat / coach summary). Dismissible. -->
+        <div id="setup-banner" class="setup-banner" hidden></div>
+        <!-- Update-available notice (checkUpdates(), app mode only). Dismissible per version. -->
+        <div id="update-banner" class="setup-banner update" hidden></div>
+        <!-- Offline notice (checkOnline()): network-only features won't work. Dismissible. -->
+        <div id="offline-banner" class="setup-banner" hidden></div>
       </div>
 
-      <aside class="side-col">
-        <div id="coach" class="coach" hidden></div>
-        <!-- Current-move feedback + AI summary live in this scrolling column so the board column
-             stays short enough to pin (see .board-col position:sticky in styles.css). -->
-        <div id="comment" class="comment"></div>
-        <div id="verdict" class="verdict"></div>
-        <div class="coach-ai-wrap">
-          <button id="coach-ai-btn" class="coach-ai-btn" hidden
-            title="Have Kibitz write a fuller coaching summary of this game (uses your Claude subscription)">
-            ✨ Generate AI coach (Kibitz) summary
-          </button>
-          <div id="coach-ai" class="coach-ai" hidden></div>
-        </div>
-        <section id="movelist-panel" class="movelist-panel">
-          <div class="movelist-head">
-            <h2>Moves</h2>
-            <button id="movelist-expand" type="button" class="movelist-expand">Show all ▾</button>
+      <!-- ===== Review: the board + analysis workspace ======================================= -->
+      <main id="view-review" class="view active">
+        <section class="board-col">
+          <div id="game-meta" class="muted">Loading…</div>
+          <div id="scoreboard" class="scoreboard" hidden></div>
+          <div class="board-wrap">
+            <div id="evalbar"><div id="evalbar-fill"></div></div>
+            <div id="board" class="cg-wrap"></div>
           </div>
-          <ol id="movelist" class="movelist compact"></ol>
-        </section>
-        <h2>Mistakes</h2>
-        <ol id="mistakes" class="mistakes"></ol>
-        <div class="chat-panel">
-          <h2>Ask your AI coach (Kibitz)</h2>
-          <p class="muted chat-hint">
-            Ask Kibitz about the current board position (uses your Claude subscription).
-          </p>
-          <div id="chat-messages" class="chat-messages"></div>
-          <form id="chat-form" class="chat-form">
-            <input id="chat-input" type="text" autocomplete="off"
-              placeholder="e.g. why is this bad? · what should I do here?" />
-            <button type="submit" id="chat-send" aria-label="Send" title="Send">→</button>
-          </form>
-        </div>
-      </aside>
 
-      <aside class="history-col" id="history-col">
-        <div class="hist-head">
-          <h2 id="hist-title">Games</h2>
-          <button id="history-collapse" class="hist-x" title="Hide panel" aria-label="Hide panel">×</button>
-        </div>
-        <!-- Two-level navigation: the top row picks the section (Games / Puzzles / Insights); the
-             sub-row (Games only) picks the game source. Keeps five-plus destinations reachable in
-             a ~360px column without the old single row overflowing. -->
-        <div class="seg seg-top" role="tablist">
-          <button id="top-games" class="active" type="button">♟ Games</button>
-          <button id="mode-puzzles" type="button">🧩 Puzzles</button>
-          <button id="mode-insights" type="button">📈 Insights</button>
-        </div>
-        <div class="seg seg-sub" id="games-sources" role="tablist">
-          <button id="mode-normal" class="active" type="button">My games</button>
-          <button id="mode-lichess" type="button">Lichess</button>
-          <button id="mode-chesscom" type="button">Chess.com</button>
-          <button id="mode-paste" type="button">Paste</button>
-        </div>
-
-        <!-- Puzzle trainer: drills built from YOUR analyzed mistakes (no new engine work). Pick a
-             weakness chip to train it; export the set to a Lichess study of practice chapters. -->
-        <div id="puzzles-panel" class="puzzles-panel" style="display:none">
-          <div class="puzzles-head">
-            <span class="muted">Train the mistakes from your own games.</span>
-            <div class="puzzles-filters">
-              <select id="puzzle-kinds" title="Which mistakes become puzzles"
-                aria-label="Puzzle severity filter">
-                <option value="" selected>All severities</option>
-                <option value="mistake,blunder">Mistakes + blunders</option>
-                <option value="blunder">Blunders only</option>
-              </select>
-              <select id="puzzle-days" title="Which games to build puzzles from"
-                aria-label="Puzzle time period">
-                <option value="0" selected>All time</option>
-                <option value="30">Last 30 days</option>
-                <option value="7">Last 7 days</option>
-              </select>
+          <div id="graph-wrap">
+            <svg id="graph" preserveAspectRatio="none"></svg>
+            <div id="analysis-progress" hidden>
+              <div id="analysis-progress-label">Analyzing…</div>
+              <div id="analysis-progress-track"><div id="analysis-progress-fill"></div></div>
             </div>
           </div>
+
+          <div class="controls" id="game-controls">
+            <div class="ctrl-group">
+              <button id="back" class="btn" title="Back one move (←)">◀</button>
+              <button id="fwd" class="btn" title="Forward one move (→ or Space)">▶</button>
+            </div>
+            <div class="ctrl-group">
+              <button id="prev-mistake" class="btn" title="Previous mistake (p)">‹ Mistake</button>
+              <button id="next-mistake" class="btn" title="Next mistake (n)">Mistake ›</button>
+              <button id="reset" class="btn" title="Snap back to the move under review">↩ Review move</button>
+            </div>
+            <label class="toggle" title="Toggle best-move arrows (l) — green = what should have been played instead of the dark played-move arrow (all green: the played move WAS best)">
+              <input type="checkbox" id="best-toggle" checked /> Best move
+            </label>
+            <label class="toggle" title="Toggle threat arrows (t) — what the side that just moved is threatening, in yellow">
+              <input type="checkbox" id="threat-toggle" checked /> Threats
+            </label>
+            <button id="flip-review" type="button" class="btn" hidden
+              title="Re-analyse this same game from the other player's perspective (in case the wrong side was picked)">↺ Other side</button>
+          </div>
+
+          <!-- Puzzle-mode controls (Reveal / Next / Exit): swapped in for #game-controls while a
+               drill is active, so they sit in the same spot the nav buttons normally occupy. -->
+          <div id="puzzle-controls" class="controls puzzle-controls" hidden></div>
+          <div id="status" class="status"></div>
+        </section>
+
+        <!-- Drag left/right to resize the board; double-click to reset. position:fixed in CSS. -->
+        <div id="col-resizer" class="col-resizer" role="separator" aria-orientation="vertical"
+          aria-label="Resize board — drag, or double-click to reset" tabindex="0"
+          title="Drag to resize the board · double-click to reset">
+          <div class="grip"><span></span><span></span><span></span></div>
+        </div>
+
+        <aside class="side-col">
+          <div id="coach" class="card coach" hidden></div>
+          <div id="comment" class="comment"></div>
+          <div id="verdict" class="verdict"></div>
+          <div class="coach-ai-wrap">
+            <button id="coach-ai-btn" class="btn coach-ai-btn" hidden
+              title="Have Kibitz write a fuller coaching summary of this game (uses your Claude subscription)">
+              ✨ AI coach summary
+            </button>
+            <div id="coach-ai" class="card coach-ai" hidden></div>
+          </div>
+          <section id="movelist-panel" class="card movelist-panel">
+            <div class="card-head">
+              <h2>Moves</h2>
+              <button id="movelist-expand" type="button" class="linklike movelist-expand">Show all ▾</button>
+            </div>
+            <ol id="movelist" class="movelist compact"></ol>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Mistakes</h2></div>
+            <ol id="mistakes" class="mistakes"></ol>
+          </section>
+          <section class="card chat-panel">
+            <div class="card-head"><h2>Ask Kibitz</h2></div>
+            <p class="muted chat-hint">
+              Ask about the current position (uses your Claude subscription).
+            </p>
+            <div id="chat-messages" class="chat-messages"></div>
+            <form id="chat-form" class="chat-form">
+              <input id="chat-input" type="text" autocomplete="off"
+                placeholder="why is this bad? · what should I do here?" />
+              <button type="submit" id="chat-send" aria-label="Send" title="Send">→</button>
+            </form>
+          </section>
+        </aside>
+      </main>
+
+      <!-- ===== Games: browse, sync, and import games ======================================= -->
+      <main id="view-games" class="view">
+        <div class="page" id="history-col">
+          <header class="page-head">
+            <h1>Games</h1>
+            <p class="muted">Open a past review, fetch games by username, or import any PGN.
+              You can also drop a <code>.pgn</code> file anywhere on this page.</p>
+          </header>
+          <div class="seg" id="games-sources" role="tablist">
+            <button id="mode-normal" class="active" type="button">My games</button>
+            <button id="mode-lichess" type="button">Lichess</button>
+            <button id="mode-chesscom" type="button">Chess.com</button>
+            <button id="mode-paste" type="button">Paste PGN</button>
+          </div>
+          <form id="lichess-form" class="lichess-form" style="display:none">
+            <div class="lichess-row">
+              <input id="lichess-user" type="text" autocomplete="off" placeholder="lichess username" />
+              <button type="submit" class="btn">Load</button>
+            </div>
+            <button type="button" id="set-as-me" class="linklike set-as-me"
+              title="Make this your account: used for 'My games', your profile, and auto-open on launch">
+              Set as my account
+            </button>
+          </form>
+          <form id="chesscom-form" class="lichess-form" style="display:none">
+            <div class="lichess-row">
+              <input id="chesscom-user" type="text" autocomplete="off" placeholder="chess.com username" />
+              <button type="submit" class="btn">Load</button>
+            </div>
+            <button type="button" id="chesscom-sync" class="linklike set-as-me"
+              title="Fetch your newest chess.com games and analyze the ones not seen before">
+              ⟳ Sync new games
+            </button>
+          </form>
+          <form id="paste-form" class="paste-form" style="display:none">
+            <textarea id="paste-pgn" rows="8" autocomplete="off" spellcheck="false"
+              placeholder="Paste a PGN here (one or many games — e.g. Chess.com → Download games), use Upload .pgn, or drag a .pgn file onto this page"></textarea>
+            <input id="paste-file" type="file" accept=".pgn,.txt" hidden />
+            <div class="paste-row">
+              <button type="button" id="paste-upload" class="btn" title="Load a .pgn file (one or many games)">Upload .pgn</button>
+              <label class="paste-side">You played
+                <select id="paste-side">
+                  <option value="auto">auto</option>
+                  <option value="white">White</option>
+                  <option value="black">Black</option>
+                </select>
+              </label>
+              <button type="submit" class="btn primary">Analyze</button>
+            </div>
+            <input id="paste-username" type="text" autocomplete="off"
+              placeholder="your username (optional — for multi-game files)" />
+          </form>
+          <div id="history-status" class="hist-status"></div>
+          <ol id="history-list" class="history"></ol>
+        </div>
+      </main>
+
+      <!-- ===== Puzzles: drills built from YOUR analyzed mistakes ============================ -->
+      <main id="view-puzzles" class="view">
+        <div class="page" id="puzzles-panel">
+          <header class="page-head">
+            <h1>Puzzles</h1>
+            <p class="muted">Train the mistakes from your own games — pick a weakness to drill it.
+              Tactics and mates play out as full sequences.</p>
+          </header>
+          <div class="puzzles-filters">
+            <select id="puzzle-kinds" title="Which mistakes become puzzles"
+              aria-label="Puzzle severity filter">
+              <option value="" selected>All severities</option>
+              <option value="mistake,blunder">Mistakes + blunders</option>
+              <option value="blunder">Blunders only</option>
+            </select>
+            <select id="puzzle-days" title="Which games to build puzzles from"
+              aria-label="Puzzle time period">
+              <option value="0" selected>All time</option>
+              <option value="30">Last 30 days</option>
+              <option value="7">Last 7 days</option>
+            </select>
+          </div>
           <div id="puzzle-themes" class="puzzle-themes"></div>
-          <div class="puzzles-export">
-            <h3>Lichess study</h3>
+          <section class="card puzzles-export">
+            <div class="card-head"><h2>Lichess study</h2></div>
             <p class="muted">Turn this puzzle set into a private study of interactive practice
               chapters on Lichess — one chapter per mistake, solution to find, your move annotated.</p>
-            <button type="button" id="puzzle-export"
+            <button type="button" id="puzzle-export" class="btn primary"
               title="Needs a Lichess token with the study:write permission (⚙ Settings).">
               ▲ Send to Lichess study
             </button>
             <div id="puzzle-export-status" class="muted"></div>
-          </div>
+          </section>
         </div>
-        <form id="lichess-form" class="lichess-form" style="display:none">
-          <div class="lichess-row">
-            <input id="lichess-user" type="text" autocomplete="off" placeholder="lichess username" />
-            <button type="submit">Load</button>
-          </div>
-          <button type="button" id="set-as-me" class="set-as-me"
-            title="Make this your account: used for 'My games', your profile, and auto-open on launch">
-            Set as my account
-          </button>
-        </form>
-        <form id="chesscom-form" class="lichess-form" style="display:none">
-          <div class="lichess-row">
-            <input id="chesscom-user" type="text" autocomplete="off" placeholder="chess.com username" />
-            <button type="submit">Load</button>
-          </div>
-          <button type="button" id="chesscom-sync" class="set-as-me"
-            title="Fetch your newest chess.com games and analyze the ones not seen before">
-            ⟳ Sync new games
-          </button>
-        </form>
-        <form id="paste-form" class="paste-form" style="display:none">
-          <textarea id="paste-pgn" rows="8" autocomplete="off" spellcheck="false"
-            placeholder="Paste a PGN here (one or many games — e.g. Chess.com → Download games), use Upload .pgn, or drag a .pgn file onto this panel"></textarea>
-          <input id="paste-file" type="file" accept=".pgn,.txt" hidden />
-          <div class="paste-row">
-            <button type="button" id="paste-upload" title="Load a .pgn file (one or many games)">Upload .pgn</button>
-            <label class="paste-side">You played
-              <select id="paste-side">
-                <option value="auto">auto</option>
-                <option value="white">White</option>
-                <option value="black">Black</option>
-              </select>
-            </label>
-            <button type="submit">Analyze</button>
-          </div>
-          <input id="paste-username" type="text" autocomplete="off"
-            placeholder="your username (optional — for multi-game files)" />
-        </form>
-        <div id="history-status" class="hist-status"></div>
-        <ol id="history-list" class="history"></ol>
+      </main>
 
-        <!-- Cross-game insights (own tab): stat tiles + accuracy trend + weakness/phase charts,
-             aggregated from every analyzed game in the chosen window (GET /api/insights).
-             Refreshes as new games are analyzed. -->
-        <section id="insights" class="insights" style="display:none">
-          <div class="insights-head">
-            <span class="muted">Patterns across your analyzed games.</span>
-            <select id="insights-period" title="Time period" aria-label="Insights time period">
-              <option value="1">Today</option>
-              <option value="7">Last 7 days</option>
-              <option value="30" selected>Last 30 days</option>
-              <option value="0">All time</option>
-            </select>
-          </div>
+      <!-- ===== Insights: your patterns across every analyzed game ========================== -->
+      <main id="view-insights" class="view">
+        <div class="page wide" id="insights">
+          <header class="page-head">
+            <h1>Insights</h1>
+            <div class="page-head-row">
+              <p class="muted">Patterns across your analyzed games.</p>
+              <select id="insights-period" title="Time period" aria-label="Insights time period">
+                <option value="1">Today</option>
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="0">All time</option>
+              </select>
+            </div>
+          </header>
           <div id="insights-body" class="insights-body"></div>
           <div id="chart-tip" class="chart-tip" hidden></div>
-        </section>
-      </aside>
-    </main>
+        </div>
+      </main>
+    </div>
 
     <!-- First-run prompt (app mode only): shown when there's no configured/saved account. Two
          fields — fill in either. A Lichess handle auto-opens your latest game; a Chess.com handle
-         auto-syncs your recent games on every launch. More accounts can be added later in
+         auto-syncs your recent games on launch. More accounts can be added later in
          ⚙ Settings → Advanced. -->
     <div id="firstrun" class="firstrun-overlay" hidden>
       <form id="firstrun-form" class="firstrun-card">
@@ -271,7 +282,7 @@
           <span class="set-label">Chess.com username</span>
           <input id="firstrun-chesscom-user" type="text" autocomplete="off" placeholder="ChessComUsername" />
         </label>
-        <button type="submit">Continue</button>
+        <button type="submit" class="btn primary">Continue</button>
       </form>
     </div>
 
@@ -299,7 +310,7 @@
             <span class="set-label">Auto-sync new Chess.com games on launch</span>
           </span>
           <span class="set-hint">On each launch, check your most recent Chess.com games and analyze any
-            not already reviewed. Off: fetch only when you press ⟳ Sync in the Games panel.</span>
+            not already reviewed. Off: fetch only when you press ⟳ Sync in Games.</span>
         </label>
 
         <div id="chesscom-sync-max-field" class="set-field" hidden>
@@ -313,7 +324,7 @@
         <label class="set-field set-check">
           <span class="set-check-row">
             <input id="set-coach-ai-auto" type="checkbox" />
-            <span class="set-label">Auto-generate AI coach (Kibitz) summary <span class="set-opt">(uses your Claude subscription)</span></span>
+            <span class="set-label">Auto-generate AI coach summary <span class="set-opt">(uses your Claude subscription)</span></span>
           </span>
           <span class="set-hint">Auto-write the fuller summary for every game, instead of pressing the
             button under the board. The quick side-panel summary always shows.</span>
@@ -376,8 +387,9 @@
           </label>
           <label class="set-field">
             <span class="set-label">Lichess token <span class="set-opt">(optional)</span></span>
-            <input id="set-token" type="password" autocomplete="off" placeholder="for higher rate limits" />
-            <span class="set-hint">A personal access token raises your Lichess fetch rate limit. Leave blank for anonymous access.</span>
+            <input id="set-token" type="password" autocomplete="off" placeholder="for higher rate limits + study export" />
+            <span class="set-hint">A personal access token raises your Lichess fetch rate limit; give it
+              the <b>study:write</b> permission to enable the puzzle → study export.</span>
           </label>
           <label class="set-field">
             <span class="set-label">Recent-form window <span class="set-opt">(games)</span></span>
@@ -422,7 +434,7 @@
 
         <div class="set-actions">
           <button type="button" id="settings-cancel" class="linklike">Cancel</button>
-          <button type="submit">Save</button>
+          <button type="submit" class="btn primary">Save</button>
         </div>
         <p id="settings-status" class="muted set-hint"></p>
       </form>

@@ -80,6 +80,7 @@ const HISTORY_PAGE = 10; // initial count + how many more each "Show more"
 // Puzzle trainer: when non-null the board is a "solve your own mistake" drill, not a game review.
 // { list:[puzzle...], idx, filter:{motif}, tries, revealed, solved }. See the puzzle section below.
 let puzzle = null;
+let preDrillMeta = ""; // #game-meta text from before the drill, restored on exit
 
 // App mode (double-click launcher): on open, auto-load the user's most recent game.
 // `appUsername` is the Lichess handle (config.LICHESS_USERNAME); it drives "open my latest game"
@@ -229,9 +230,15 @@ function refreshBestMoves() {
   if (bestArrowOn) {
     deepenBestMoves(done && done.fen ? done.fen : chess.fen(), myGen, done ? done.move_uci : null);
   }
-  // Threat arrows are about the position on the board: what the side that just moved would do
-  // next if it could move again (null-move search on the CURRENT position).
-  if (threatArrowOn) fetchThreats(chess.fen(), myGen);
+  // Threat arrows show what the side that made the reviewed move THREATENS NEXT (a null-move
+  // search on the position AFTER that move) — e.g. a knight stepping into forking range gets a
+  // yellow arrow on the fork. At a mistake anchor the board sits BEFORE the move, so the
+  // after-position is the next timeline node, not the board; everywhere else they coincide.
+  let threatFen = chess.fen();
+  if (!exploring && atMistakeAnchor() && timeline[cur + 1] && timeline[cur + 1].fen) {
+    threatFen = timeline[cur + 1].fen;
+  }
+  if (threatArrowOn) fetchThreats(threatFen, myGen);
 }
 
 // Run an escalating-depth best-move search; cancels itself on any position change (searchGen)
@@ -1578,7 +1585,7 @@ function reviewOtherSide() {
 
 async function openGame(pgn, side) {
   batchInfo = null; // a single open is not a batch
-  closeHistoryDrawer(); // on small screens the drawer covers the board — get out of the way
+  showBoard(); // navigate to the Review view so the opened game is in front
   beginProvisional(pgn, side);
   // AWAIT the POST: jobs.start switches the server's session/job synchronously, so by the time it
   // returns the status reflects THIS game. Polling before that could observe the *previous* game's
@@ -1618,7 +1625,7 @@ async function openBatch(pgnText, side, username) {
   batchInfo = { total: res.total_games, self_handle: res.self_handle, lastDone: -1 };
   const who = res.self_handle ? ` as ${res.self_handle}` : "";
   $("history-status").textContent = `Analyzing ${res.total_games} games${who} → they'll appear in My games.`;
-  closeHistoryDrawer(); // on small screens the drawer covers the board — get out of the way
+  showBoard(); // navigate to the Review view so the opened game is in front
   beginProvisional(res.first_pgn, res.first_side, `Analyzing game 1 of ${res.total_games}…`);
   startPolling();
 }
@@ -2086,36 +2093,46 @@ function renderInsights(d) {
 }
 
 // Just the tab chrome (active buttons + which pane is shown), no data fetch. Two levels: the top
-// row picks the section (Games / Puzzles / Insights); the sub-row (Games only) picks the source.
-let lastGamesMode = "normal"; // which Games source to return to when re-entering the Games tab
+// --- app shell: the icon rail routes between full views --------------------------------------
+// One view is visible at a time: review (the board), games, puzzles, insights. The board element
+// lives in the review view; drills and opened games navigate there.
+const VIEWS = ["review", "games", "puzzles", "insights"];
+let currentView = "review";
 
-// Hide the game side column (moves / mistakes / AI-coach chat) when the user is in a context
-// where it's about a game they're not looking at: a puzzle drill, or the Puzzles/Insights tabs.
-function updateFocusMode() {
-  const on = !!puzzle || historyMode === "puzzles" || historyMode === "insights";
-  document.body.classList.toggle("focus-mode", on);
+function showView(name) {
+  if (!VIEWS.includes(name)) return;
+  currentView = name;
+  for (const v of VIEWS) {
+    $(`view-${v}`).classList.toggle("active", v === name);
+    $(`rail-${v}`).classList.toggle("active", v === name);
+  }
+  // Entering a data view refreshes it (cheap: local reads), so it's never stale.
+  if (name === "games") setMode(historyMode);
+  else if (name === "puzzles") loadPuzzleThemes();
+  else if (name === "insights") loadInsights();
 }
 
+// Bring the board in front (games/drills open onto it) — every "open something" path calls this.
+function showBoard() {
+  showView("review");
+}
+
+// Hide the game side column (moves / mistakes / AI-coach chat) during a drill: it describes a
+// game the user isn't looking at.
+function updateFocusMode() {
+  document.body.classList.toggle("focus-mode", !!puzzle);
+}
+
+// Games view: which source is active (My games / Lichess / Chess.com / Paste).
 function activateTab(mode) {
   historyMode = mode;
-  const inGames = !["puzzles", "insights"].includes(mode);
-  if (inGames) lastGamesMode = mode;
-  $("top-games").classList.toggle("active", inGames);
-  $("mode-puzzles").classList.toggle("active", mode === "puzzles");
-  $("mode-insights").classList.toggle("active", mode === "insights");
-  $("hist-title").textContent = inGames ? "Games" : mode === "puzzles" ? "Puzzles" : "Insights";
-  $("games-sources").style.display = inGames ? "flex" : "none";
   for (const m of ["normal", "lichess", "chesscom", "paste"]) {
     $(`mode-${m}`).classList.toggle("active", mode === m);
   }
   $("lichess-form").style.display = mode === "lichess" ? "flex" : "none";
   $("chesscom-form").style.display = mode === "chesscom" ? "flex" : "none";
   $("paste-form").style.display = mode === "paste" ? "flex" : "none";
-  $("puzzles-panel").style.display = mode === "puzzles" ? "block" : "none";
-  $("insights").style.display = mode === "insights" ? "block" : "none";
-  $("history-list").style.display = inGames && mode !== "paste" ? "" : "none";
-  $("history-status").style.display = mode === "insights" ? "none" : "";
-  updateFocusMode();
+  $("history-list").style.display = mode !== "paste" ? "" : "none";
 }
 
 // Update the "Set as my account" button to reflect whether `who` (lowercased) is already you.
@@ -2193,8 +2210,9 @@ async function startPuzzles(motif) {
     const j = Math.floor(Math.random() * (i + 1));
     [list[i], list[j]] = [list[j], list[i]];
   }
+  if (!puzzle) preDrillMeta = $("game-meta").textContent;
   puzzle = { list, idx: 0, motif, tries: 0, revealed: false, solved: false };
-  closeHistoryDrawer(); // get the panel out of the way of the board on small screens
+  showBoard(); // the drill runs on the board, in the Review view
   $("history-status").textContent = "";
   showPuzzle(0);
 }
@@ -2418,11 +2436,13 @@ function exitPuzzleMode() {
   renderPuzzlePanel(); // hides the drill bar and gives the nav buttons their slot back
   // Restore whatever game was on the board before (if any), else a neutral message.
   if (timeline.length) {
+    $("game-meta").textContent = preDrillMeta;
     gotoNode(clamp(cur, 0, timeline.length - 1));
   } else {
     $("status").textContent = "";
-    $("game-meta").textContent = "Pick a game from the Games panel, or paste a PGN.";
+    $("game-meta").textContent = "Pick a game in Games, or paste a PGN.";
   }
+  showView("puzzles"); // back to where the drill was started from
 }
 
 // Export the current puzzle selection to a Lichess study (needs a study:write token). `motif` is
@@ -2700,11 +2720,6 @@ function setMode(mode) {
   } else if (mode === "lichess" || mode === "chesscom") {
     remoteCount[mode] = LICHESS_PAGE; // fresh search starts at the first page
     loadRemote(mode, $(`${mode}-user`).value.trim());
-  } else if (mode === "puzzles") {
-    $("history-status").textContent = "";
-    loadPuzzleThemes();
-  } else if (mode === "insights") {
-    loadInsights();
   } else {
     // paste: nothing to fetch; just a hint until they submit.
     updatePasteHint();
@@ -2816,35 +2831,6 @@ function initPgnDrop() {
   );
 }
 
-// Below this width the Games panel is an off-canvas drawer (see styles.css) rather than a third
-// column, so it must start closed and auto-close when a game is opened to reveal the board.
-// Both values mirror styles.css (.history-col width + the drawer media query) — keep in sync.
-const HISTORY_DRAWER_MAX = 1520;
-const HISTORY_COL_W = 360;
-function historyIsDrawer() {
-  return window.innerWidth <= HISTORY_DRAWER_MAX;
-}
-function closeHistoryDrawer() {
-  if (historyIsDrawer()) document.body.classList.add("history-hidden");
-}
-
-function toggleHistory() {
-  document.body.classList.toggle("history-hidden");
-}
-
-// Keep the drawer state sane when the window crosses the drawer breakpoint. Without this, the
-// `history-hidden` class is whatever it was last set to (e.g. never set, if the page loaded wide),
-// so shrinking below it can leave the panel stuck open as a fixed drawer overlaying the board —
-// and the open drawer covers the ☰ Games button, so toggling it looks like nothing happens.
-// Entering drawer mode → start closed (☰ Games opens it); back to wide → show the column.
-let wasDrawer = historyIsDrawer();
-window.addEventListener("resize", () => {
-  const now = historyIsDrawer();
-  if (now === wasDrawer) return;
-  wasDrawer = now;
-  document.body.classList.toggle("history-hidden", now);
-});
-
 // --- board resizing (the iPad-style drag handle, #col-resizer) ------------------------------
 // Everything board-sized derives from the CSS var --board-size, which falls back to the
 // responsive --board-default unless we set an explicit --board-user (a px override). We keep the
@@ -2852,17 +2838,15 @@ window.addEventListener("resize", () => {
 const BOARD_SIZE_KEY = "chessBoardSize";
 let boardSizeUser = null; // px override, or null = use the responsive default
 
-// Looser than the default's 660px / 48vw caps (the user asked for less restriction) but still
-// leaves the analysis column (and the Games column, when it's not a drawer) enough room.
 function boardSizeBounds() {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const PAD = 40; // main's left+right padding
-  const GAP = 24; // main's column gap
-  const SIDE_MIN = 280; // keep the analysis column usable
+  const RAIL = 64; // the icon rail (styles.css --rail-w)
+  const PAD = 44; // review view's left+right padding
+  const GAP = 24; // gap between board and analysis columns
+  const SIDE_MIN = 300; // keep the analysis column usable
   const EVALBAR = 28; // eval bar + its gap (col-width = board-size + 28)
-  const historyCol = vw > HISTORY_DRAWER_MAX ? HISTORY_COL_W + GAP : 0; // a column when wide, else a drawer
-  const maxByWidth = vw - PAD - GAP - SIDE_MIN - historyCol - EVALBAR;
+  const maxByWidth = vw - RAIL - PAD - GAP - SIDE_MIN - EVALBAR;
   const maxByHeight = Math.round(vh * 0.92);
   const min = 240;
   const max = Math.max(min, Math.min(maxByWidth, maxByHeight));
@@ -2962,8 +2946,7 @@ function initBoardResizer() {
 }
 
 function init() {
-  // On small screens the Games panel is a drawer that overlays the board, so start it closed.
-  closeHistoryDrawer();
+  showBoard(); // the Review view (the board) is the landing view
   ground = Chessground($("board"), {
     fen: chess.fen(),
     orientation: orient,
@@ -3008,15 +2991,15 @@ function init() {
   $("chat-form").addEventListener("submit", sendChat);
 
   // Games panel: collapse toggle, mode slider, lichess lookup.
-  $("history-toggle").addEventListener("click", toggleHistory);
-  $("history-collapse").addEventListener("click", toggleHistory);
-  $("top-games").addEventListener("click", () => setMode(lastGamesMode));
+  // The rail: primary navigation between the four views.
+  for (const v of VIEWS) {
+    $(`rail-${v}`).addEventListener("click", () => showView(v));
+  }
+  // Games view: source tabs.
   $("mode-normal").addEventListener("click", () => setMode("normal"));
   $("mode-lichess").addEventListener("click", () => setMode("lichess"));
   $("mode-chesscom").addEventListener("click", () => setMode("chesscom"));
   $("mode-paste").addEventListener("click", () => setMode("paste"));
-  $("mode-puzzles").addEventListener("click", () => setMode("puzzles"));
-  $("mode-insights").addEventListener("click", () => setMode("insights"));
   // Puzzle trainer: severity + time-window filters and the Lichess-study export.
   $("puzzle-days").addEventListener("change", (e) => {
     puzzleDays = Number(e.target.value) || 0;
@@ -3147,6 +3130,12 @@ function init() {
     } else if (e.key === "p" || e.key === "P") {
       e.preventDefault();
       if (currentMistake > 0) selectMistake(currentMistake - 1); // previous mistake
+    } else if (e.key === "r" || e.key === "R") {
+      e.preventDefault();
+      showView("review"); // jump back to the board
+    } else if (e.key === "g" || e.key === "G") {
+      e.preventDefault();
+      showView("games");
     }
   });
 
