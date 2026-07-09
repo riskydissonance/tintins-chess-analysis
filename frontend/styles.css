@@ -832,6 +832,11 @@ input:focus, textarea:focus, select:focus {
 .puzzle-chip .chip-n {
   color: var(--text-2); margin-left: 5px; font-variant-numeric: tabular-nums;
 }
+.puzzle-chip .chip-due {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 10px;
+  background: var(--surface-3); color: var(--text-2); font-size: 11px; font-weight: 600;
+  vertical-align: middle;
+}
 .puzzles-export p { margin: 0 0 10px; font-size: var(--fs-1); }
 #puzzle-export-status { margin-top: 8px; font-size: var(--fs-0); }
 #puzzle-export-status a { color: var(--accent); }
@@ -902,8 +907,9 @@ input:focus, textarea:focus, select:focus {
 
 .ins-bars { display: flex; flex-direction: column; gap: 3px; }
 .ins-bar-row { display: flex; align-items: center; gap: 8px; padding: 3px 5px; border-radius: var(--r-1); }
-.ins-bar-row[data-motif] { cursor: pointer; }
-.ins-bar-row[data-motif]:hover, .ins-bar-row[data-motif]:focus-visible { background: var(--surface-2); outline: none; }
+.ins-bar-row[data-motif], .ins-bar-row[data-eco] { cursor: pointer; }
+.ins-bar-row[data-motif]:hover, .ins-bar-row[data-motif]:focus-visible,
+.ins-bar-row[data-eco]:hover, .ins-bar-row[data-eco]:focus-visible { background: var(--surface-2); outline: none; }
 .ins-bar-label { flex: 0 0 150px; font-size: var(--fs-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ins-bar-track { flex: 1; height: 10px; background: var(--surface-2); border-radius: 0 4px 4px 0; }
 .ins-bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
@@ -916,6 +922,8 @@ input:focus, textarea:focus, select:focus {
   text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .ins-table td:first-child { max-width: 0; width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ins-row-clickable { cursor: pointer; }
+.ins-row-clickable:hover, .ins-row-clickable:focus-visible { background: var(--surface-2); outline: none; }
 
 .chart-tip {
   position: absolute; z-index: 5; pointer-events: none; max-width: 260px;

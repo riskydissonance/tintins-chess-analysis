@@ -685,11 +685,12 @@ def build_game_record(sess: ReviewSession, data_dir: Optional[str] = None) -> di
     # Engine-free; reuses the timeline FENs we already have.
     eco = headers.get("ECO") or None
     opening = headers.get("Opening") or None
+    fens = [n.get("fen") for n in sess.timeline if n.get("fen")]
     if not opening:
-        fens = [n.get("fen") for n in sess.timeline if n.get("fen")]
         eco2, name2 = openings.classify_from_fens(fens)
         eco = eco or eco2
         opening = name2
+    book_ply = openings.theory_depth(fens)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -706,6 +707,7 @@ def build_game_record(sess: ReviewSession, data_dir: Optional[str] = None) -> di
         "player_result": _player_result(sess.result, side),
         "eco": eco,
         "opening": opening,
+        "book_ply": book_ply,
         "time_control": headers.get("TimeControl") or None,
         "speed": classify_speed(headers.get("TimeControl"), headers.get("Event")),
         "player_elo": _int_or_none(headers.get("WhiteElo" if side == "white" else "BlackElo", "")),
@@ -890,6 +892,7 @@ def insights(days: Optional[int] = None, data_dir: Optional[str] = None) -> dict
     agg = _aggregate(records)
     for m in agg.get("top_motifs", []):
         m["label"] = _MOTIF_LABELS.get(m["motif"], m["motif"])
+    repertoire = _repertoire(records)
     # Per-game accuracy series (oldest→newest by played day) for the panel's trend chart.
     # Only fields the chart needs; capped so a huge history can't bloat the payload.
     trend = [
@@ -901,7 +904,78 @@ def insights(days: Optional[int] = None, data_dir: Optional[str] = None) -> dict
         }
         for r in sorted(records, key=_record_day)
     ][-60:]
-    return {"player_id": me, "days": days or 0, "trend": trend, **agg}
+    return {"player_id": me, "days": days or 0, "trend": trend, "repertoire": repertoire, **agg}
+
+
+def _repertoire(records: list[dict]) -> dict:
+    """Per-color opening repertoire: for each opening the player reaches, how it's going.
+
+    Grouped by (reviewed_side, eco-or-name) so "Queen's Gambit as White" and "Queen's Gambit
+    as Black" are separate rows (very different games). Feeds the Insights "As White"/"As
+    Black" tables plus a "worst openings" callout (biggest opening-phase win% lost, min 3
+    games so a single bad game doesn't dominate).
+    """
+    groups: dict[tuple[str, str], dict] = {}
+    for r in records:
+        side = r.get("reviewed_side") or "white"
+        key_name = r.get("eco") or r.get("opening") or "Unknown"
+        key = (side, key_name)
+        g = groups.setdefault(
+            key,
+            {
+                "opening": r.get("opening") or r.get("eco") or "Unknown",
+                "eco": r.get("eco"),
+                "side": side,
+                "games": 0,
+                "score": {"win": 0, "loss": 0, "draw": 0},
+                "acc_sum": 0.0,
+                "acc_n": 0,
+                "opening_loss_sum": 0.0,
+                "book_plies": [],
+                "blunders_opening": 0,
+            },
+        )
+        g["games"] += 1
+        result = r.get("player_result")
+        if result in g["score"]:
+            g["score"][result] += 1
+        if r.get("accuracy") is not None:
+            g["acc_sum"] += r["accuracy"]
+            g["acc_n"] += 1
+        g["opening_loss_sum"] += (r.get("phase_loss") or {}).get("opening", 0.0)
+        bp = r.get("book_ply")
+        if bp is not None:
+            g["book_plies"].append(bp)
+        for m in r.get("mistakes", []):
+            if m.get("phase") == "opening" and m.get("classification") == "blunder":
+                g["blunders_opening"] += 1
+
+    def _finalize(g: dict) -> dict:
+        book_plies = sorted(g["book_plies"])
+        book_ply = None
+        if book_plies:
+            n = len(book_plies)
+            mid = n // 2
+            book_ply = book_plies[mid] if n % 2 else (book_plies[mid - 1] + book_plies[mid]) // 2
+        return {
+            "opening": g["opening"],
+            "eco": g["eco"],
+            "side": g["side"],
+            "games": g["games"],
+            "score": g["score"],
+            "avg_accuracy": round(g["acc_sum"] / g["acc_n"], 1) if g["acc_n"] else None,
+            "opening_loss_per_game": round(g["opening_loss_sum"] / g["games"], 1) if g["games"] else 0.0,
+            "book_ply": book_ply,
+            "blunders_opening": g["blunders_opening"],
+        }
+
+    finalized = [_finalize(g) for g in groups.values()]
+    white = sorted((g for g in finalized if g["side"] == "white"), key=lambda g: -g["games"])[:8]
+    black = sorted((g for g in finalized if g["side"] == "black"), key=lambda g: -g["games"])[:8]
+    worst = sorted(
+        (g for g in finalized if g["games"] >= 3), key=lambda g: -g["opening_loss_per_game"]
+    )[:5]
+    return {"white": white, "black": black, "worst": worst}
 
 
 # --------------------------------------------------------------------------------------

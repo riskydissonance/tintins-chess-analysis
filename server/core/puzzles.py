@@ -157,17 +157,23 @@ def build_puzzles(
     days: Optional[int] = None,
     limit: Optional[int] = None,
     data_dir: Optional[str] = None,
+    eco: Optional[str] = None,
 ) -> list[dict]:
     """Puzzles built from the user's own mistakes, hardest lesson first.
 
     `motif` keeps only puzzles tagged with that motif (e.g. "hung_piece", "missed_fork") — the
     "train this weakness" filter. `kinds` keeps only those classifications (subset of
     inaccuracy/mistake/blunder; default all). `days` limits to recent games (0/None = all).
+    `eco` keeps only puzzles whose source game matches that ECO code (case-insensitive) — the
+    "drill this opening" filter from the Insights repertoire report.
     Sorted blunders-first then by win chance lost, so the biggest, clearest lessons come first.
     """
     kept = set(kinds) if kinds else None
+    eco_filter = eco.upper() if eco else None
     puzzles: list[dict] = []
     for rec in history.my_records(days, data_dir):
+        if eco_filter is not None and (rec.get("eco") or "").upper() != eco_filter:
+            continue
         cached_pvs: Optional[dict[int, list[str]]] = None  # analysis-cache lines, fetched lazily
         for m in rec.get("mistakes", []):
             if kept is not None and m.get("classification") not in kept:

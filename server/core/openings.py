@@ -73,6 +73,28 @@ def classify_from_fens(fens: list[str]) -> tuple[Optional[str], Optional[str]]:
     return best
 
 
+def theory_depth(fens: list[str]) -> int:
+    """How many plies a game stayed "in book" — the deepest ply (1-indexed) whose position is a
+    known named line, or 0 if none matched.
+
+    Same philosophy as `classify_from_fens` (deepest match wins, transpositions included), but
+    reports the ply count rather than the (eco, name) at that ply. `fens` are positions in play
+    order (e.g. `ReviewSession.timeline` FENs).
+    """
+    book = _book()
+    if not book:
+        return 0
+    depth = 0
+    for i, fen in enumerate(fens):
+        try:
+            epd = chess.Board(fen).epd()
+        except ValueError:
+            continue
+        if epd in book:
+            depth = i + 1
+    return depth
+
+
 def classify_from_pgn(pgn: str) -> tuple[Optional[str], Optional[str]]:
     """Deepest (eco, name) match for a full PGN string (convenience for callers without a
     pre-built timeline, e.g. tests/backfill). Replays the mainline and reuses the FEN path."""

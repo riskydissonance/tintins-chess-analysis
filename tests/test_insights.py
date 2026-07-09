@@ -125,6 +125,112 @@ def test_opening_accuracy_ignores_games_without_accuracy(data_dir):
     assert petrov["avg_accuracy"] == 80.0
 
 
+def _rep_rec(
+    game_id: str,
+    side: str,
+    *,
+    eco: str = "B90",
+    opening: str = "Sicilian Defense: Najdorf Variation",
+    result: str = "win",
+    accuracy: float = 80.0,
+    opening_loss: float = 5.0,
+    book_ply: int | None = 10,
+    mistakes: list[dict] | None = None,
+) -> dict:
+    return {
+        "schema_version": 1,
+        "game_id": game_id,
+        "reviewed_side": side,
+        "analyzed_at": "2024-01-01T00:00:00Z",
+        "player_id": "alice",
+        "platform": "lichess",
+        "player_name": "alice",
+        "date": _day(1),
+        "white": "alice" if side == "white" else "bob",
+        "black": "bob" if side == "white" else "alice",
+        "result": "1-0",
+        "player_result": result,
+        "eco": eco,
+        "opening": opening,
+        "book_ply": book_ply,
+        "speed": "blitz",
+        "accuracy": accuracy,
+        "counts": {"inaccuracy": 0, "mistake": 0, "blunder": 0},
+        "phase_loss": {"opening": opening_loss, "middlegame": 0.0, "endgame": 0.0},
+        "mistakes": mistakes or [],
+    }
+
+
+def test_repertoire_groups_by_side_and_computes_score(data_dir):
+    _write(
+        [
+            _rep_rec("g1", "white", result="win", opening_loss=4.0),
+            _rep_rec("g2", "white", result="loss", opening_loss=6.0),
+            _rep_rec("g3", "black", eco="C50", opening="Italian Game", result="draw"),
+        ],
+        data_dir,
+    )
+    rep = history.insights(None, data_dir)["repertoire"]
+    assert len(rep["white"]) == 1
+    white = rep["white"][0]
+    assert white["side"] == "white"
+    assert white["games"] == 2
+    assert white["score"] == {"win": 1, "loss": 1, "draw": 0}
+    assert white["opening_loss_per_game"] == 5.0
+    assert len(rep["black"]) == 1
+    assert rep["black"][0]["opening"] == "Italian Game"
+
+
+def test_repertoire_worst_requires_min_three_games(data_dir):
+    # Only 2 games in this opening/side -> excluded from "worst" despite a high loss rate.
+    _write(
+        [
+            _rep_rec("g1", "white", opening_loss=20.0),
+            _rep_rec("g2", "white", opening_loss=20.0),
+        ],
+        data_dir,
+    )
+    rep = history.insights(None, data_dir)["repertoire"]
+    assert rep["worst"] == []
+
+
+def test_repertoire_worst_sorted_by_loss_per_game(data_dir):
+    _write(
+        [
+            _rep_rec("g1", "white", eco="B90", opening_loss=2.0),
+            _rep_rec("g2", "white", eco="B90", opening_loss=2.0),
+            _rep_rec("g3", "white", eco="B90", opening_loss=2.0),
+            _rep_rec("g4", "black", eco="C50", opening="Italian Game", opening_loss=15.0),
+            _rep_rec("g5", "black", eco="C50", opening="Italian Game", opening_loss=15.0),
+            _rep_rec("g6", "black", eco="C50", opening="Italian Game", opening_loss=15.0),
+        ],
+        data_dir,
+    )
+    rep = history.insights(None, data_dir)["repertoire"]
+    assert rep["worst"][0]["eco"] == "C50"
+    assert rep["worst"][0]["opening_loss_per_game"] == 15.0
+
+
+def test_repertoire_blunders_opening_and_book_ply(data_dir):
+    mistakes = [
+        {"phase": "opening", "classification": "blunder"},
+        {"phase": "middlegame", "classification": "blunder"},
+        {"phase": "opening", "classification": "mistake"},
+    ]
+    _write(
+        [
+            _rep_rec("g1", "white", book_ply=8, mistakes=mistakes),
+            _rep_rec("g2", "white", book_ply=12),
+            _rep_rec("g3", "white", book_ply=None),
+        ],
+        data_dir,
+    )
+    white = history.insights(None, data_dir)["repertoire"]["white"][0]
+    assert white["blunders_opening"] == 1
+    # Median of the two known book_ply values (8, 12) -> 10; the None record is ignored.
+    assert white["book_ply"] == 10
+
+
 def test_insights_trend_is_chronological_and_capped(data_dir):
     # Oldest→newest by played day, one entry per game, with the fields the trend chart reads.
     _write(

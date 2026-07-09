@@ -119,6 +119,18 @@ def test_puzzles_sorted_blunders_first_then_win_drop(data_dir):
     ]
 
 
+def test_filters_by_eco(data_dir):
+    najdorf = _rec("g1", [_mistake(motifs=["hung_piece"], ply=1)]) | {"eco": "B90"}
+    italian = _rec("g2", [_mistake(motifs=["hung_piece"], ply=1)]) | {"eco": "C50"}
+    _write([najdorf, italian], data_dir)
+    out = puzzles.build_puzzles(eco="B90", data_dir=data_dir)
+    assert len(out) == 1
+    assert out[0]["game_id"] == "g1"
+    # Case-insensitive match.
+    assert len(puzzles.build_puzzles(eco="b90", data_dir=data_dir)) == 1
+    assert puzzles.build_puzzles(eco="A00", data_dir=data_dir) == []
+
+
 def test_filters_motif_kinds_and_limit(data_dir):
     _write(
         [

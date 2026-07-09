@@ -2040,22 +2040,53 @@ function renderInsights(d) {
     );
   }
 
-  // Openings + speeds: small tables (identity + two measures reads better as rows than bars).
-  const ops = (d.openings || []).slice(0, 5);
-  if (ops.length) {
+  // Repertoire report: per-color opening tables, plus a "worst openings" callout — replaces the
+  // old flat "most played openings" table. Every row is clickable → drills that opening's
+  // mistakes in the Puzzles trainer (same click-to-train pattern as the weakness bars above).
+  const rep = d.repertoire || {};
+  const eco = (o) => escapeAttr(o.eco || "");
+  const scoreText = (s) => `${(s && s.win) || 0}-${(s && s.draw) || 0}-${(s && s.loss) || 0}`;
+  const worst = (rep.worst || []).filter((o) => o.eco);
+  if (worst.length) {
+    const max = Math.max(...worst.map((o) => o.opening_loss_per_game), 0);
     parts.push(
-      `<h3>Most played openings</h3><table class="ins-table"><thead>` +
-        `<tr><th>Opening</th><th>Games</th><th>Acc</th></tr></thead><tbody>` +
-        ops
-          .map(
-            (o) =>
-              `<tr><td>${escapeHtml(o.opening)}</td><td>${o.games}</td>` +
-              `<td>${o.avg_accuracy != null ? o.avg_accuracy + "%" : "—"}</td></tr>`
+      `<h3>Your worst openings <span class="ins-hint">click one to train it</span></h3>` +
+        `<div class="ins-bars">` +
+        worst
+          .map((o) =>
+            barRow(
+              `${o.opening} (${o.side === "white" ? "White" : "Black"})`,
+              o.opening_loss_per_game,
+              max,
+              `${o.opening_loss_per_game.toFixed(1)}%/g · ${o.games}g`,
+              `data-eco="${eco(o)}" role="button" tabindex="0" title="Train ${escapeAttr(o.opening)} in Puzzles"`
+            )
           )
           .join("") +
-        `</tbody></table>`
+        `</div>`
     );
   }
+  const repTable = (rows, title) => {
+    const withEco = rows.filter((o) => o.eco);
+    return (
+      `<h3>${escapeHtml(title)} <span class="ins-hint">click a row to train it</span></h3>` +
+      `<table class="ins-table"><thead><tr><th>Opening</th><th>Games</th><th>Score</th>` +
+      `<th>Acc</th><th>In book</th><th>Loss/g (opening)</th></tr></thead><tbody>` +
+      rows
+        .map(
+          (o) =>
+            `<tr${o.eco ? ` class="ins-row-clickable" data-eco="${eco(o)}" role="button" tabindex="0"` : ""}>` +
+            `<td>${escapeHtml(o.opening)}</td><td>${o.games}</td><td>${scoreText(o.score)}</td>` +
+            `<td>${o.avg_accuracy != null ? o.avg_accuracy + "%" : "—"}</td>` +
+            `<td>${o.book_ply != null ? o.book_ply + " plies" : "—"}</td>` +
+            `<td>${o.opening_loss_per_game.toFixed(1)}%</td></tr>`
+        )
+        .join("") +
+      `</tbody></table>`
+    );
+  };
+  if ((rep.white || []).length) parts.push(repTable(rep.white, "As White"));
+  if ((rep.black || []).length) parts.push(repTable(rep.black, "As Black"));
   const speeds = (d.by_speed || []).filter((s) => s.games > 0).slice(0, 4);
   if (speeds.length > 1) {
     parts.push(
@@ -2076,7 +2107,18 @@ function renderInsights(d) {
   body.innerHTML = parts.join("");
   // Weakness bars drill straight into the puzzle trainer for that motif.
   body.querySelectorAll("[data-motif]").forEach((el) => {
-    const go = () => startPuzzles(el.dataset.motif); // navigates to the Puzzles view itself
+    const go = () => startPuzzles(el.dataset.motif, ""); // navigates to the Puzzles view itself
+    el.addEventListener("click", go);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        go();
+      }
+    });
+  });
+  // Repertoire rows drill straight into the puzzle trainer for that opening.
+  body.querySelectorAll("[data-eco]").forEach((el) => {
+    const go = () => startPuzzles("", el.dataset.eco); // navigates to the Puzzles view itself
     el.addEventListener("click", go);
     el.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") {
@@ -2168,6 +2210,8 @@ function reflectSetAsMe(who) {
 // exported to a Lichess study of practice chapters.
 let puzzleDays = 0; // time window for themes + puzzles (0 = all history)
 let puzzleKinds = ""; // severity filter: "" (all) | "mistake,blunder" | "blunder"
+let puzzleOrder = "srs"; // "srs" (due/failed first, server-ordered) | "random" (client-shuffled)
+let puzzleEco = ""; // opening filter, set when drilling a repertoire row from Insights
 
 async function loadPuzzleThemes() {
   const wrap = $("puzzle-themes");
@@ -2197,18 +2241,22 @@ async function loadPuzzleThemes() {
     .map(
       (t) =>
         `<button type="button" class="puzzle-chip" data-motif="${escapeHtml(t.motif)}">` +
-        `${escapeHtml(t.label)} <span class="chip-n">${t.count}</span></button>`
+        `${escapeHtml(t.label)} <span class="chip-n">${t.count}</span>` +
+        (t.due ? `<span class="chip-due">${t.due} due</span>` : "") +
+        `</button>`
     )
     .join("");
   wrap.querySelectorAll(".puzzle-chip").forEach((btn) => {
-    btn.addEventListener("click", () => startPuzzles(btn.dataset.motif || ""));
+    btn.addEventListener("click", () => startPuzzles(btn.dataset.motif || "", ""));
   });
 }
 
-async function startPuzzles(motif) {
+async function startPuzzles(motif, eco = "") {
+  puzzleEco = eco;
   $("puzzles-status").textContent = "Loading puzzles…";
-  const q = new URLSearchParams({ days: String(puzzleDays), limit: "60", kinds: puzzleKinds });
+  const q = new URLSearchParams({ days: String(puzzleDays), limit: "60", kinds: puzzleKinds, order: puzzleOrder });
   if (motif) q.set("motif", motif);
+  if (puzzleEco) q.set("eco", puzzleEco);
   let data;
   try {
     data = await fetch("/api/puzzles?" + q.toString()).then((r) => r.json());
@@ -2221,11 +2269,17 @@ async function startPuzzles(motif) {
     $("puzzles-status").textContent = "No puzzles for that theme yet.";
     return;
   }
-  // Present in random order (Fisher–Yates): the API returns hardest-first, so without this the
-  // drill always opens on the same position and the answers get memorised instead of learned.
-  for (let i = list.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [list[i], list[j]] = [list[j], list[i]];
+  // Random order (Fisher–Yates): the API returns hardest-first, so without this the drill always
+  // opens on the same position and the answers get memorised instead of learned. When
+  // order="srs" (default) the server already ordered due/failed puzzles first with a per-tier
+  // shuffle, so we leave that order alone — unless this build of the API didn't annotate it
+  // (older server / fallback), in which case we still shuffle client-side.
+  const serverOrdered = puzzleOrder === "srs" && list.every((p) => p && p.srs);
+  if (!serverOrdered) {
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
   }
   if (!puzzle) {
     preDrillMeta = $("game-meta").textContent;
@@ -2252,6 +2306,8 @@ function showPuzzle(i) {
   puzzle.gen = (puzzle.gen || 0) + 1; // invalidates queued auto-replies from the previous puzzle
   puzzle.revealed = false;
   puzzle.solved = false;
+  puzzle.failed = false; // whether a wrong move has happened yet on this puzzle
+  puzzle.attemptSent = false; // guards against double-posting an attempt for this puzzle
   // Leave any game-review mode: the board is a puzzle now, not a timeline.
   analyzing = false;
   exploring = false;
@@ -2307,6 +2363,19 @@ function puzzleStatusPrompt() {
   }
 }
 
+// Fire-and-forget: tell the SRS scheduler how this puzzle went. Guarded by `attemptSent` so a
+// puzzle only ever counts once (a reveal after a wrong move shouldn't post twice, etc).
+function recordPuzzleAttempt(result, firstTry) {
+  if (!puzzle || puzzle.attemptSent) return;
+  puzzle.attemptSent = true;
+  const p = puzzle.list[puzzle.idx];
+  fetch("/api/puzzles/attempt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ puzzle_id: p.id, result, first_try: firstTry }),
+  }).catch(() => {});
+}
+
 function onPuzzleMove(orig, dest) {
   const p = puzzle.list[puzzle.idx];
   const line = puzzleLine(p);
@@ -2335,6 +2404,7 @@ function onPuzzleMove(orig, dest) {
     if (puzzle.plies >= line.length) {
       // Sequence complete.
       puzzle.solved = true;
+      recordPuzzleAttempt("pass", puzzle.tries === 0 && !puzzle.failed);
       const extra = puzzle.tries === 0 ? "first try!" : `after ${puzzle.tries + 1} tries.`;
       const what = line.length > 1 ? (p.mate ? "Checkmate!" : "Full sequence!") : escapeHtml(p.solution_san) + ",";
       $("status").innerHTML = `✅ <b>Correct</b> — ${what} ${extra}` +
@@ -2366,6 +2436,10 @@ function onPuzzleMove(orig, dest) {
   // Wrong: flash a red arrow on the attempt, snap the board back (keeping sequence progress),
   // and let them try again.
   puzzle.tries += 1;
+  if (!puzzle.failed) {
+    puzzle.failed = true;
+    recordPuzzleAttempt("fail", false);
+  }
   const wasPlayed = uci === p.played_uci && puzzle.plies === 0 ? " — that's the move you played in the game" : "";
   $("status").innerHTML = `❌ Not the best${wasPlayed}. Try again${puzzle.tries >= 2 ? ", or Reveal." : "."}`;
   paintPuzzleBoard([{ orig, dest, brush: "red" }]);
@@ -2379,6 +2453,7 @@ function revealPuzzle() {
   const p = puzzle.list[puzzle.idx];
   const line = puzzleLine(p);
   puzzle.revealed = true;
+  recordPuzzleAttempt("fail", false);
   const gen = puzzle.gen;
   const step = () => {
     if (!puzzle || puzzle.gen !== gen) return;
@@ -3032,6 +3107,10 @@ function init() {
   $("puzzle-kinds").addEventListener("change", (e) => {
     puzzleKinds = e.target.value || "";
     loadPuzzleThemes();
+  });
+  $("puzzle-order").addEventListener("change", (e) => {
+    puzzleOrder = e.target.value || "srs";
+    if (puzzle) startPuzzles(puzzle.motif, puzzleEco); // re-fetch in the new order for the current set
   });
   $("puzzle-export").addEventListener("click", exportPuzzlesToStudy);
   // Paste-PGN: analyze any PGN (e.g. Chess.com), single or multi-game, without the Lichess fetch.

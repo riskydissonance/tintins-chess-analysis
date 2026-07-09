@@ -36,3 +36,33 @@ def test_no_match_returns_none():
 
 def test_book_loaded():
     assert len(openings._book()) > 3000
+
+
+def test_theory_depth_mainline():
+    import chess
+
+    board = chess.Board()
+    fens = []
+    for mv in "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6".split():
+        board.push_san(mv)
+        fens.append(board.fen())
+    # Deep, well-known theory (Najdorf) -> matched at the final ply.
+    assert openings.theory_depth(fens) == len(fens)
+
+
+def test_theory_depth_off_book_early():
+    import chess
+
+    board = chess.Board()
+    fens = []
+    # A rare, quickly off-book line: only the first couple of plies should match anything.
+    for mv in "a4 h5 a5 h4".split():
+        board.push_san(mv)
+        fens.append(board.fen())
+    depth = openings.theory_depth(fens)
+    assert 0 <= depth < len(fens)
+
+
+def test_theory_depth_empty_and_garbage():
+    assert openings.theory_depth([]) == 0
+    assert openings.theory_depth(["not-a-fen", "also-garbage"]) == 0

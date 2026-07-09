@@ -8,6 +8,8 @@ spawns a thread).
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -20,6 +22,7 @@ from server.core import lichess
 from server.core import lichess_study
 from server.core import multipgn
 from server.core import puzzles
+from server.core import srs
 from server.web import jobs
 
 router = APIRouter()
@@ -209,18 +212,36 @@ class StudyBody(BaseModel):
 
 
 @router.get("/puzzles")
-def get_puzzles(motif: str = "", kinds: str = "", days: int = 0, limit: int = 0) -> dict:
+def get_puzzles(
+    motif: str = "", kinds: str = "", days: int = 0, limit: int = 0, order: str = "srs", eco: str = ""
+) -> dict:
     """Puzzles built from the configured user's own mistakes (hardest lesson first).
 
     `motif` trains one weakness (e.g. "hung_piece"); `kinds` filters severity; `days` limits to
-    recent games. No engine work — pure re-use of stored analysis."""
+    recent games; `eco` drills one opening (from the Insights repertoire report). No engine work
+    — pure re-use of stored analysis. `order="srs"` (default) puts due/previously-failed puzzles
+    first per the Leitner scheduler (`srs.order_puzzles`); any other value keeps `build_puzzles`'s
+    own order (still annotated with each puzzle's `srs` state)."""
     try:
         items = puzzles.build_puzzles(
             motif=motif or None,
             kinds=_parse_kinds(kinds),
             days=days or None,
             limit=limit or None,
+            eco=eco or None,
         )
+        if order == "srs":
+            items = srs.order_puzzles(items)
+        else:
+            states = srs.puzzle_states()
+            now = datetime.now(timezone.utc)
+            for p in items:
+                st = states.get(p.get("id"))
+                p["srs"] = {
+                    "box": st.get("box", 0) if st else 0,
+                    "due": srs.is_due(st, now),
+                    "seen": st.get("seen", 0) if st else 0,
+                }
     except Exception as exc:  # pragma: no cover - a trainer must never break the board
         return {"puzzles": [], "error": str(exc)}
     return {"count": len(items), "puzzles": items}
@@ -228,11 +249,40 @@ def get_puzzles(motif: str = "", kinds: str = "", days: int = 0, limit: int = 0)
 
 @router.get("/puzzles/themes")
 def get_puzzle_themes(days: int = 0, kinds: str = "") -> dict:
-    """Per-motif puzzle counts (labelled) for the "train your weaknesses" chips."""
+    """Per-motif puzzle counts (labelled) for the "train your weaknesses" chips, plus how many of
+    each motif are currently due (Leitner scheduler)."""
     try:
-        return {"themes": puzzles.themes(days=days or None, kinds=_parse_kinds(kinds))}
+        motif_themes = puzzles.themes(days=days or None, kinds=_parse_kinds(kinds))
+        states = srs.puzzle_states()
+        now = datetime.now(timezone.utc)
+        due_by_motif: dict[str, int] = {}
+        if states:
+            for p in puzzles.build_puzzles(kinds=_parse_kinds(kinds), days=days or None):
+                if not srs.is_due(states.get(p.get("id")), now):
+                    continue
+                for motif in p.get("motifs") or []:
+                    due_by_motif[motif] = due_by_motif.get(motif, 0) + 1
+        for t in motif_themes:
+            t["due"] = due_by_motif.get(t["motif"], 0)
+        return {"themes": motif_themes}
     except Exception as exc:  # pragma: no cover - defensive
         return {"themes": [], "error": str(exc)}
+
+
+class AttemptBody(BaseModel):
+    puzzle_id: str
+    result: str = "fail"
+    first_try: bool = False
+
+
+@router.post("/puzzles/attempt")
+def post_puzzle_attempt(body: AttemptBody) -> dict:
+    """Record one puzzle attempt for the Leitner scheduler."""
+    try:
+        srs.record_attempt(body.puzzle_id, body.result, body.first_try)
+        return {"ok": True}
+    except Exception as exc:  # pragma: no cover - a trainer must never break the board
+        return {"ok": False, "error": str(exc)}
 
 
 @router.post("/puzzles/lichess-study")
