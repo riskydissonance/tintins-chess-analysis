@@ -180,6 +180,20 @@ function reviewedNode() {
   const i = reviewedMoveNode();
   return i >= 0 ? timeline[i] || null : null;
 }
+// Chessground caches the board element's bounding rect and only re-measures it on redrawAll().
+// placeBoard() reparents the board and schedules that redrawAll() for the next animation frame;
+// until it runs, the cached rect is stale (0×0, from before reparenting), so any shapes set in the
+// meantime get NaN SVG coords ("Expected length, 'NaN'" console errors). placeBoard() sets this
+// flag while a re-measure is pending; setAutoShapesSafe defers shape-setting until after it lands.
+let boardRemeasurePending = false;
+function setAutoShapesSafe(shapes) {
+  if (boardRemeasurePending) {
+    requestAnimationFrame(() => ground && ground.setAutoShapes(shapes));
+    return;
+  }
+  ground.setAutoShapes(shapes);
+}
+
 function drawArrows() {
   const shapes = [];
   // The move under review, as a dark arrow — "here's what was played", not a judgement. At a
@@ -196,7 +210,7 @@ function drawArrows() {
   for (const s of evalShapes) shapes.push(s);
   // autoShapes (not setShapes): app-managed annotations that survive piece press/drag and
   // only change when we redraw — so the played-move arrow stays until you actually move.
-  ground.setAutoShapes(shapes);
+  setAutoShapesSafe(shapes);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2478,8 +2492,15 @@ function placeBoard(view) {
   const boardCol = document.querySelector(".board-col");
   if (!slot || !boardCol || boardCol.parentElement === slot) return;
   slot.appendChild(boardCol);
-  // Chessground caches its bounds; re-measure after the move settles in the new layout.
-  if (ground) requestAnimationFrame(() => ground.redrawAll());
+  // Chessground caches its bounds; re-measure after the move settles in the new layout. Any
+  // shape-setting in between (see setAutoShapesSafe) is deferred until this lands.
+  if (ground) {
+    boardRemeasurePending = true;
+    requestAnimationFrame(() => {
+      ground.redrawAll();
+      boardRemeasurePending = false;
+    });
+  }
 }
 
 function showView(name) {
@@ -2682,7 +2703,7 @@ function paintPuzzleBoard(shapes = []) {
     movable: { color: done ? undefined : p.color, dests: done ? new Map() : computeDests(), free: false, showDests: true },
     lastMove: undefined,
   });
-  ground.setAutoShapes(shapes);
+  setAutoShapesSafe(shapes);
   const opp = (p.color === "white" ? p.black : p.white) || "?";
   $("game-meta").textContent = `Puzzle ${puzzle.idx + 1} of ${puzzle.list.length} — from your game vs ${opp}`;
 }
