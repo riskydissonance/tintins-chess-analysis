@@ -607,6 +607,29 @@ def _clean_date(headers: dict) -> Optional[str]:
     return raw.replace(".", "-")
 
 
+def _played_at_from_headers(headers: dict) -> Optional[float]:
+    """Epoch seconds the game was played, from PGN time headers (start of game preferred, so a
+    multi-day correspondence game files under its start date — matching the row's shown date —
+    rather than its finish). Lets the history list order by true play time rather than analysis
+    time, so games from the same day keep their real sequence. Returns None when nothing parses."""
+    for dk, tk in (
+        ("UTCDate", "UTCTime"),
+        ("Date", "StartTime"),
+        ("EndDate", "EndTime"),
+        ("Date", "UTCTime"),
+    ):
+        d = (headers.get(dk) or "").strip()
+        t = (headers.get(tk) or "").strip()
+        if not d or not t or "?" in d:
+            continue
+        try:
+            dt = datetime.strptime(f"{d} {t}", "%Y.%m.%d %H:%M:%S")
+        except ValueError:
+            continue
+        return dt.replace(tzinfo=timezone.utc).timestamp()
+    return None
+
+
 def _player_result(result: str, side: str) -> Optional[str]:
     if result == "1-0":
         return "win" if side == "white" else "loss"
@@ -703,6 +726,7 @@ def build_game_record(sess: ReviewSession, data_dir: Optional[str] = None) -> di
         "platform": platform,
         "player_name": player_name,
         "date": _clean_date(headers),
+        "played_at": _played_at_from_headers(headers),
         "white": headers.get("White", "?"),
         "black": headers.get("Black", "?"),
         "result": sess.result,
@@ -793,9 +817,10 @@ def my_player_id(data_dir: Optional[str] = None) -> str:
 def history_rows(player_id: Optional[str] = None, data_dir: Optional[str] = None) -> list[dict]:
     """Compact, newest-first list of analysed games for the web history panel.
 
-    Newest-first by the day the game was PLAYED (the PGN date), falling back to when it was
-    imported/analysed for records with no date; same-day games tiebreak on import time. So a
-    freshly imported old game files under its played date instead of jumping to the top.
+    Newest-first by when the game was PLAYED — the precise PGN timestamp when available (so
+    same-day games keep their real sequence), falling back to the PGN date, then the
+    imported/analysed time for records with neither. So a freshly imported old game files under
+    its played date instead of jumping to the top.
 
     Filtered to `player_id` when given (the panel passes `my_player_id()` for "just my games").
     Each row reuses fields already on the record — no recompute — plus `has_pgn` so the frontend
@@ -803,7 +828,7 @@ def history_rows(player_id: Optional[str] = None, data_dir: Optional[str] = None
     """
     records = sorted(
         load_records(player_id=player_id, data_dir=data_dir),
-        key=lambda r: (_record_day(r), r.get("analyzed_at", "")),
+        key=lambda r: (_played_ts(r), r.get("analyzed_at", "")),
         reverse=True,
     )
     # "Is this me?" is computed at READ time against the CURRENT identity config, not from the
@@ -854,6 +879,42 @@ def _record_day(r: dict) -> str:
     else when it was analysed. Lexicographic compare works for cutoffs."""
     d = (r.get("date") or "").strip()
     return d if d else (r.get("analyzed_at") or "")[:10]
+
+
+_PGN_HEADER_RE = re.compile(r'^\[(\w+)\s+"(.*)"\]\s*$')
+
+
+def _played_ts(r: dict) -> float:
+    """Sortable epoch for the history list: when the game was PLAYED. Uses the stored
+    `played_at` when present, else parses the record's own PGN headers (so records written
+    before played_at existed still order by real play time), else falls back to the played day
+    at midnight UTC, else the analysed time. Always returns a comparable float."""
+    ts = r.get("played_at")
+    if isinstance(ts, (int, float)) and ts > 0:
+        return float(ts)
+    pgn = r.get("pgn") or ""
+    if pgn:
+        headers: dict = {}
+        for line in pgn.splitlines():
+            line = line.strip()
+            if not line:
+                break
+            m = _PGN_HEADER_RE.match(line)
+            if m:
+                headers[m.group(1)] = m.group(2)
+        parsed = _played_at_from_headers(headers)
+        if parsed:
+            return parsed
+    day = _record_day(r)[:10]
+    try:
+        return datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        pass
+    a = (r.get("analyzed_at") or "")[:19]
+    try:
+        return datetime.strptime(a, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def my_records(days: Optional[int] = None, data_dir: Optional[str] = None) -> list[dict]:

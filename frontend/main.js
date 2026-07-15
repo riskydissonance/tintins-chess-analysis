@@ -81,6 +81,8 @@ const LICHESS_PAGE = 5; // initial count + how many more each "Load more"
 let historyGames = []; // all rows from the last /api/history fetch
 let historyCount = 10; // how many to show now ("Show more" grows it)
 let unreviewedOnly = false; // "Unreviewed only" checkbox in the games list
+let historyNeedsReload = false; // set when a sync/analysis lands new games while a non-normal
+// tab is showing; the next time the My games list is shown it refetches instead of showing stale rows
 const HISTORY_PAGE = 10; // initial count + how many more each "Show more"
 // Puzzle trainer: when non-null the board is a "solve your own mistake" drill, not a game review.
 // { list:[puzzle...], idx, filter:{motif}, tries, revealed, solved }. See the puzzle section below.
@@ -1852,6 +1854,7 @@ async function onAnalysisReady() {
     // Mid-drill: don't yank the board over to the finished game — the session/timeline are
     // loaded, so Exit puzzles (or opening it from My games) shows it without a refetch.
     if (historyMode === "normal") loadHistory();
+    else historyNeedsReload = true; // new game recorded; My games refreshes on next visit
     return;
   }
   // Keep the user where they were navigating; a fresh open (prevCur === 0, nothing played yet)
@@ -1870,9 +1873,13 @@ async function onAnalysisReady() {
       loadHistory(`Analyzed ${n} game${n === 1 ? "" : "s"}${who}. Showing the first below.`).then(
         matchCurrentHistoryGame
       );
+    } else {
+      historyNeedsReload = true; // analyzed under a remote tab; My games refreshes on next visit
     }
   } else if (historyMode === "normal") {
     loadHistory().then(matchCurrentHistoryGame); // the just-analyzed game now appears in the list
+  } else {
+    historyNeedsReload = true; // analyzed under a remote tab; My games refreshes on next visit
   }
 }
 
@@ -1906,6 +1913,7 @@ async function loadHistory(doneMsg) {
   if (myPlayerId) $("lichess-user").placeholder = myPlayerId;
   historyGames = data.games || [];
   historyCount = HISTORY_PAGE; // a fresh fetch resets paging back to the first page
+  historyNeedsReload = false; // the list now reflects the latest history
   renderMyGames();
   $("history-status").textContent = historyGames.length ? doneMsg || "" : "No analyzed games yet.";
   scheduleInsights(); // the aggregate reflects whatever just landed in history
@@ -2534,6 +2542,13 @@ function showView(name) {
     $(`rail-${v}`).classList.toggle("active", v === name);
   }
   placeBoard(name);
+  // The scoreboard (game report) and eval graph belong to a full-game REVIEW. The board column is
+  // shared across views, so without this they'd linger on the Puzzles view showing the LAST
+  // REVIEWED game's stats — unrelated to the puzzle in front of you. The trainer surfaces its own
+  // source-game context in #game-meta instead, so keep these two to the Review view.
+  const showReviewChrome = name === "review";
+  $("scoreboard").style.display = showReviewChrome ? "" : "none";
+  $("graph-wrap").style.display = showReviewChrome ? "" : "none";
   // Entering a data view refreshes it (cheap: local reads), so it's never stale. But if we're
   // ALREADY on "review" (e.g. openGame() re-asserting it while a game loads), skip the refetch —
   // it would flash/reset the games list (or re-query a remote source) for no visible reason.
@@ -2555,7 +2570,12 @@ function showSidePane(pane) {
   $("side-review").classList.toggle("active", sidePane === "review");
   $("games-pane").hidden = sidePane !== "games";
   $("review-pane").hidden = sidePane !== "review";
-  if (sidePane === "games") restoreHistoryScroll();
+  if (sidePane === "games") {
+    // Returning to the list: if a sync/analysis landed new games while a remote tab (or the board)
+    // was showing, refetch so they appear without a manual tab switch. Otherwise just restore scroll.
+    if (historyMode === "normal" && historyNeedsReload && !analyzing) loadHistory();
+    else restoreHistoryScroll();
+  }
 }
 
 // Bring the board + analysis in front (opening a game lands here) — every "open" path calls this.
@@ -2737,7 +2757,11 @@ function showPuzzle(i) {
   bestArrows = [];
   threatArrows = [];
   playedWasBest = false;
-  paintPuzzleBoard();
+  const p = puzzle.list[puzzle.idx];
+  // If we know the opponent's move that led into this position, reveal it first (animate it in);
+  // otherwise paint the puzzle position straight away.
+  if (p.setup_fen && p.prev_uci) playPuzzleIntro(puzzle.gen);
+  else paintPuzzleBoard();
   puzzleStatusPrompt();
   renderPuzzlePanel();
 }
@@ -2760,11 +2784,39 @@ function paintPuzzleBoard(shapes = []) {
     turnColor: turnColor(),
     check: chess.inCheck(),
     movable: { color: done ? undefined : p.color, dests: done ? new Map() : computeDests(), free: false, showDests: true },
-    lastMove: undefined,
+    // Highlight the opponent's move that led into the puzzle while the solver is still at the start
+    // (also survives a snap-back after a wrong guess), so it's clear what was just played.
+    lastMove: puzzle.plies === 0 && p.prev_uci ? [p.prev_uci.slice(0, 2), p.prev_uci.slice(2, 4)] : undefined,
   });
   setAutoShapesSafe(shapes);
   const opp = (p.color === "white" ? p.black : p.white) || "?";
   $("game-meta").textContent = `Puzzle ${puzzle.idx + 1} of ${puzzle.list.length} — from your game vs ${opp} (${p.date || '?'}, ${p.opening || '?'})`;
+}
+
+// Intro reveal: show the board one ply back and animate the opponent's move INTO the puzzle
+// position, so the solver sees what was just played before it's their turn. Falls through to the
+// normal puzzle board once the move lands. Guarded by `gen` so switching puzzles mid-reveal is safe.
+function playPuzzleIntro(gen) {
+  const p = puzzle.list[puzzle.idx];
+  orient = p.color;
+  applyEvalBarTheme();
+  setEvalBar(null);
+  chess.load(p.setup_fen);
+  ground.set({
+    fen: chess.fen(),
+    orientation: orient,
+    turnColor: turnColor(),
+    check: chess.inCheck(),
+    movable: { color: undefined, dests: new Map(), free: false, showDests: false },
+    lastMove: undefined,
+  });
+  const opp = (p.color === "white" ? p.black : p.white) || "?";
+  $("game-meta").textContent = `Puzzle ${puzzle.idx + 1} of ${puzzle.list.length} — from your game vs ${opp} (${p.date || '?'}, ${p.opening || '?'})`;
+  setTimeout(() => {
+    // Only proceed if we're still sitting at the start of the same puzzle (no move/navigation).
+    if (!puzzle || puzzle.gen !== gen || puzzle.plies !== 0) return;
+    paintPuzzleBoard(); // lands on p.fen; Chessground animates the opponent's move + highlights it
+  }, 500);
 }
 
 // The "your move" prompt line, with sequence progress when the drill is longer than one move.
@@ -2778,7 +2830,8 @@ function puzzleStatusPrompt() {
   $("status").className = "status";
   if (puzzle.plies === 0) {
     const seq = total > 1 ? (p.mate ? ` Mate in ${total} — play the whole sequence.` : ` ${total}-move sequence.`) : "";
-    $("status").innerHTML = `${glyph} <b>${toMove} to move</b> — find the move you missed.${seq}`;
+    const prev = p.prev_san ? ` <span class="muted">Opponent played ${escapeHtml(p.prev_san)}.</span>` : "";
+    $("status").innerHTML = `${glyph} <b>${toMove} to move</b> — find the move you missed.${seq}${prev}`;
   } else {
     $("status").innerHTML = `✅ Keep going — <b>move ${num} of ${total}</b>.`;
   }

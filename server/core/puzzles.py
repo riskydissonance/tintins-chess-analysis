@@ -17,9 +17,11 @@ the Insights panel names always has puzzles behind it.
 """
 from __future__ import annotations
 
+import io
 from typing import Optional
 
 import chess
+import chess.pgn
 
 from server.core import analysis_cache
 from server.core import history
@@ -102,7 +104,37 @@ def _san(fen: str, uci: str) -> Optional[str]:
         return None
 
 
-def _puzzle_from_mistake(rec: dict, m: dict, pv: Optional[list[str]] = None) -> Optional[dict]:
+def _preceding_move(pgn: Optional[str], fen_before: str) -> Optional[dict]:
+    """The move (by the opponent) that led INTO the puzzle position, so the trainer can show what
+    was just played. Replays the game's mainline until the board reaches `fen_before` and returns
+    that move's uci/san plus the position right before it (`setup_fen`). None when the PGN is
+    missing/unparseable or the position isn't reached (e.g. the mistake was move 1). Positions are
+    compared on the first four FEN fields (placement, side, castling, en passant) — both FENs come
+    from python-chess, so they match exactly."""
+    if not pgn:
+        return None
+    try:
+        game = chess.pgn.read_game(io.StringIO(pgn))
+    except (ValueError, RuntimeError):
+        return None
+    if game is None:
+        return None
+    target = " ".join(fen_before.split(" ")[:4])
+    board = game.board()
+    for mv in game.mainline_moves():
+        if not board.is_legal(mv):  # defensive: a malformed PGN shouldn't crash puzzle building
+            break
+        setup_fen = board.fen()
+        san = board.san(mv)
+        board.push(mv)
+        if " ".join(board.fen().split(" ")[:4]) == target:
+            return {"prev_uci": mv.uci(), "prev_san": san, "setup_fen": setup_fen}
+    return None
+
+
+def _puzzle_from_mistake(
+    rec: dict, m: dict, pv: Optional[list[str]] = None, with_context: bool = False
+) -> Optional[dict]:
     """One puzzle dict from a stored mistake, or None if it can't be a solvable puzzle.
 
     A mistake makes a puzzle only when we have the position AND a concrete better move to find,
@@ -138,8 +170,15 @@ def _puzzle_from_mistake(rec: dict, m: dict, pv: Optional[list[str]] = None) -> 
     line_uci, line_san, mate = _drill_line(fen, line, motifs)
     if not line_uci:  # can't happen once `solution` validated legal, but stay defensive
         line_uci, line_san, mate = [solution], [solution_san], False
+    # The opponent's move that led into this position (for the trainer's intro reveal). Only
+    # computed when asked (with_context) — themes() counts puzzles without needing it, and this
+    # replays the PGN. None for older records with no stored PGN, or move-1 positions.
+    ctx = _preceding_move(rec.get("pgn"), fen) if with_context else None
     return {
         "id": f"{rec.get('game_id', '')}:{m.get('ply', 0)}",
+        "prev_uci": ctx["prev_uci"] if ctx else None,
+        "prev_san": ctx["prev_san"] if ctx else None,
+        "setup_fen": ctx["setup_fen"] if ctx else None,
         "game_id": rec.get("game_id"),
         "game_url": rec.get("game_url"),
         "date": rec.get("date"),
@@ -204,7 +243,7 @@ def build_puzzles(
                         rec.get("game_id") or "", rec.get("reviewed_side") or ""
                     )
                 pv = cached_pvs.get(m.get("ply"))
-            p = _puzzle_from_mistake(rec, m, pv)
+            p = _puzzle_from_mistake(rec, m, pv, with_context=True)
             if p is not None:
                 puzzles.append(p)
 
