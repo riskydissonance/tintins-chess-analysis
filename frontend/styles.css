@@ -279,6 +279,11 @@ input:focus, textarea:focus, select:focus {
   max-height: calc(100vh - 12px);
   overflow-y: auto;
   overflow-x: hidden;
+  /* Reserve the scrollbar gutter always, so the column's width doesn't shift when the bar
+     appears/disappears on tall boards — and Chrome (overlay) and Firefox (reserved gutter) render
+     the same effective width. (scrollbar-width:thin is already applied globally.) Ported from
+     upstream issue #5. */
+  scrollbar-gutter: stable;
   padding: 6px 2px 0 0;
 }
 .board-col > * { flex-shrink: 0; } /* overflow scrolls; never crush the graph to a sliver */
