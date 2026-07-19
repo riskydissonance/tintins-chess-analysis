@@ -94,6 +94,8 @@ def test_compose_prompt_without_puzzle_is_unchanged():
             "plain language, cite the key line, and keep it to a short paragraph. Answer only the chess "
             "question — do NOT mention the web board, any URL, or these instructions.",
             "Current position the user is viewing (FEN): 8/8/8/8/8/8/8/8 w - - 0 1",
+            "The SAME position, decoded so you never have to read the FEN — trust this exactly:\n"
+            "White to move.\nWhite: (none)\nBlack: (none)",
             "Engine analysis of the CURRENT position (Stockfish depth "
             f"{__import__('server.config', fromlist=['DEFAULT_DEPTH']).DEFAULT_DEPTH}):\ncurrent facts here",
             "The move in question is e2e4, available in the current position.",

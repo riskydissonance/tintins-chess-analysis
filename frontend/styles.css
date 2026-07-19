@@ -816,6 +816,12 @@ input:focus, textarea:focus, select:focus {
 .history li .h-title { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
 .history li .h-sub { color: var(--text-2); font-size: var(--fs-0); margin-top: 3px; }
 .history li .h-blunders { color: var(--blunder); font-weight: 600; font-size: var(--fs-0); white-space: nowrap; }
+/* "Open this game on Lichess/Chess.com" ↗ link in the board header, right after the player names. */
+.meta-open {
+  text-decoration: none; color: var(--text-2); font-weight: 700; margin-left: 5px;
+  padding: 0 3px; border-radius: 3px; white-space: nowrap;
+}
+.meta-open:hover { color: var(--accent); background: var(--surface-2); }
 .history li.unreviewed .h-title::after { content: "•"; color: #d9a441; margin-left: 4px; }
 /* The game currently open on the board, kept in sync with currentHistoryGame. */
 .history li.active-game {
